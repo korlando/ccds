@@ -16,8 +16,8 @@ import (
   _ "github.com/go-sql-driver/mysql"
 )
 
-// set lineLimit to -1 (or anything < 0) to read all lines
-func encryptAndInsertAll(db *sql.DB, path string, lineLimit int) (int64, int, []string, error) {
+// set limit to -1 (or anything < 0) to read all lines
+func encryptAndInsertAll(db *sql.DB, path string, limit, offset int) (int64, int, []string, error) {
   totalEncryptionTime := int64(0)
   numEncryptions := 0
   failures := []string{}
@@ -27,29 +27,54 @@ func encryptAndInsertAll(db *sql.DB, path string, lineLimit int) (int64, int, []
   }
   defer file.Close()
   scanner := bufio.NewScanner(file)
-  count := 0
-  var limit int
-  if lineLimit < 0 {
-    limit = 1
-  } else {
-    limit = lineLimit
-  }
-  for count < limit && scanner.Scan() {
+  lineCount := 0
+  for (limit < 0 || lineCount < limit + offset) && scanner.Scan() {
+    lineCount += 1
+    if lineCount < offset {
+      continue
+    }
     line := scanner.Text()
     username, password, err := parseCredential(line)
     if err != nil {
       failures = append(failures, line)
     } else {
-      hash, execTime := runArgon2id([]byte(password), []byte(username), 1, 0.5*1024, 8, 64)
+      credHash, execTime := runArgon2id([]byte(password), []byte(username), 1, 64*1024, 8, 64)
       totalEncryptionTime += execTime.Nanoseconds()
       numEncryptions += 1
-      _, err := db.Query("INSERT INTO hash_test (hash) VALUES (?)", hash)
+      _, err := db.Exec("INSERT INTO cred_hash_1_64_8_64_test (hash) VALUES (?)", credHash)
       if err != nil {
         failures = append(failures, line)
       }
-    }
-    if lineLimit >= 0 {
-      count += 1
+      rows, err := db.Query("SELECT count FROM pw_data_test WHERE pw='?' LIMIT 1", password)
+      if err == nil {
+        if rows.Next() {
+          _, err := db.Exec("UPDATE pw_data_test SET count = count + 1 WHERE pw='?'", password)
+          if err != nil {
+
+          }
+        } else {
+          length := len(password)
+          hasLetters, _ := regexp.MatchString("[a-z]", password)
+          hasNumbers, _ := regexp.MatchString("[0-9]", password)
+          hasSymbols, _ := regexp.MatchString("[^a-z0-9]", password)
+          var let int
+          var num int
+          var sym int
+          if hasLetters {
+            let = 1
+          }
+          if hasNumbers {
+            num = 1
+          }
+          if hasSymbols {
+            sym = 1
+          }
+          _, err := db.Exec("INSERT INTO pw_data_test (pw, count, len, let, num, sym) VALUES ('?', 1, ?, b'?', b'?', b'?')", password, length, let, num, sym)
+          if err != nil {
+
+          }
+        }
+      }
     }
   }
   if err := scanner.Err(); err != nil {
@@ -107,7 +132,7 @@ func readAllFiles(from string, lineLimit int) (int64, int) {
         if parseErr != nil {
           fmt.Printf("Parsing error: %s\n", parseErr)
         } else {
-          _, execTime := runArgon2id([]byte(password), []byte(username), 1, 0.5*1024, 8, 64)
+          _, execTime := runArgon2id([]byte(password), []byte(username), 1, 64*1024, 8, 64)
           totalEncryptionTime += execTime.Nanoseconds()
           numEncryptions += 1
         }
@@ -153,11 +178,15 @@ func main() {
     log.Fatal(err)
   }
   start := time.Now()
-  totalEncryptionTime, numEncryptions := readAllFiles("./data", 5)
-  fmt.Println(numEncryptions, "credentials read and encrypted in", time.Since(start))
+  totalEncryptionTime, numEncryptions, failures, err := encryptAndInsertAll(db, "./data/data.tsv", 1000, 0)
+  // totalEncryptionTime, numEncryptions := readAllFiles("./data", 5)
+  fmt.Println(numEncryptions, "credentials read, encrypted, and inserted in", time.Since(start))
   avgDur, err := time.ParseDuration(strconv.FormatInt(totalEncryptionTime / int64(numEncryptions), 10) + "ns")
   if err != nil {
     log.Fatal(err)
   }
   fmt.Println("Average argon2id run time:", avgDur)
+  if len(failures) > 0 {
+    
+  }
 }
