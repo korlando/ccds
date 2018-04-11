@@ -29,6 +29,8 @@ const DataPath = "./data/data.tsv"
 const FailuresFilePath = "./data/failures.txt"
 const TempFailuresFilePath = "./data/failures.tmp.txt"
 
+const dupeRegexp = "^Error 1062: Duplicate entry.+$"
+
 type failure struct {
   line string
   desc string
@@ -99,7 +101,7 @@ func cleanUpFailures(path string) {
   for scanner.Scan() {
     line := scanner.Text()
     vals := strings.Split(line, "\t")
-    isDupeEntry, _ := regexp.MatchString("^Error 1062: Duplicate entry.+$", vals[1])
+    isDupeEntry, _ := regexp.MatchString(dupeRegexp, vals[1])
     if vals[0] != CredInsertFailed || (vals[0] == CredInsertFailed && !isDupeEntry) {
       writer.WriteString(line + "\n")
     }
@@ -195,15 +197,19 @@ func encryptAndInsertAll(db *sql.DB, path string, limit, offset int) (int64, int
       numEncryptions += 1
       _, err := db.Exec("INSERT INTO " + CredentialTable + " (hash) VALUES (?)", credHash)
       if err != nil {
-        failures = append(failures, failure{line, CredInsertFailed, err})
+        // skip dupe errors
+        matched, _ := regexp.MatchString(dupeRegexp, err.Error())
+        if !matched {
+          failures = append(failures, failure{line, CredInsertFailed, err})
+        }
       }
-      fail, err := analyzePassword(db, password)
-      if err != nil {
-        failures = append(failures, fail)
-      }
+      // fail, err := analyzePassword(db, password)
+      // if err != nil {
+      //   failures = append(failures, fail)
+      // }
     }
     if numEncryptions > 0 && numEncryptions % 10000 == 0 {
-      fmt.Println(numEncryptions, "credentials read, encrypted, and inserted in", time.Since(start), "so far")
+      fmt.Println(numEncryptions, "credentials encrypted and inserted in", time.Since(start), "so far")
       avgDur, err := time.ParseDuration(strconv.FormatInt(totalEncryptionTime / int64(numEncryptions), 10) + "ns")
       if err == nil {
         fmt.Println("Average argon2id run time so far:", avgDur)
@@ -222,19 +228,21 @@ func getDB() (*sql.DB, error) {
 }
 
 func getDSN() string {
-  return os.Getenv("MYSQL_USER") + ":" + os.Getenv("MYSQL_PW") + "@/ccds"
+  return os.Getenv("CCDS_DB_USER") + ":" + os.Getenv("CCDS_DB_PW") + "@/ccds"
 }
 
 func parseCredential(cred string) (string, string, error) {
-  matched, err := regexp.MatchString("^[^\\t]+\\t[^\\t]+$", cred)
-  if err != nil {
-    return "", "", err
+  tabMatched, _ := regexp.MatchString("^[^\\t]+\\t[^\\t]+$", cred)
+  if tabMatched {
+  	result := strings.Split(cred, "\t")
+  	return result[0], result[1], nil
   }
-  if !matched {
-    return "", "", errors.New("Unable to parse credential " + cred)
-  }
-  result := strings.Split(cred, "\t")
-  return result[0], result[1], nil
+ 	spaceMatched, _ := regexp.MatchString("^[^\\s]+\\s[^\\s]+$", cred)
+ 	if spaceMatched {
+ 		result := strings.Split(cred, " ")
+ 		return result[0], result[1], nil
+ 	}
+ 	return "", "", errors.New("Unable to parse credential " + cred)
 }
 
 func readAllFiles(from string, lineLimit int) (int64, int) {
@@ -335,10 +343,5 @@ func main() {
   defer db.Close()
   checkDB(db)
   // cleanUpFailures(FailuresFilePath)
-  doEncryption(db, 500000, 2500000)
-  // failures, err := correctUpperCase(db, 2500000, 0)
-  // if err != nil {
-  //   log.Fatal(err)
-  // }
-  // writeFailures(failures, "./data/uppercase-correction-failures.txt")
+  doEncryption(db, 200000, 9200000)
 }
