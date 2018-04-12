@@ -14,9 +14,10 @@ import (
   "time"
   "golang.org/x/crypto/argon2"
   _ "github.com/go-sql-driver/mysql"
+  "ccds/server"
 )
 
-const CredentialTable = "cred_hash_1_64_8_64"
+const CredentialTable = server.CredHashTable
 const PasswordDataTable = "pw_data"
 
 const ParseFailed = "Parse"
@@ -222,15 +223,6 @@ func encryptAndInsertAll(db *sql.DB, path string, limit, offset int) (int64, int
   return totalEncryptionTime, numEncryptions, failures, nil
 }
 
-func getDB() (*sql.DB, error) {
-  db, err := sql.Open("mysql", getDSN())
-  return db, err
-}
-
-func getDSN() string {
-  return os.Getenv("CCDS_DB_USER") + ":" + os.Getenv("CCDS_DB_PW") + "@/ccds"
-}
-
 func parseCredential(cred string) (string, string, error) {
   tabMatched, _ := regexp.MatchString("^[^\\t]+\\t[^\\t]+$", cred)
   if tabMatched {
@@ -336,12 +328,12 @@ func writeFailures(failures []failure, path string) {
 }
 
 func main() {
-  db, err := getDB()
+  db, err := server.GetDevDB()
   if err != nil {
     log.Fatal(err)
   }
   defer db.Close()
   checkDB(db)
   // cleanUpFailures(FailuresFilePath)
-  doEncryption(db, 200000, 9200000)
+  doEncryption(db, 500000, 10000000)
 }

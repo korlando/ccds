@@ -1,11 +1,10 @@
-package handlers
+package server
 
 import (
   "database/sql"
   "encoding/json"
   "io"
   "net/http"
-  "ccds/src/factory"
 )
 
 type SearchCredHashRequestBody struct {
@@ -24,14 +23,14 @@ func SearchCredHashHandler(w http.ResponseWriter, r *http.Request, db *sql.DB) {
   var s SearchCredHashRequestBody
   err := decodeBody(r.Body, &s)
   if err != nil {
-    respondWithJSON(w, http.StatusBadRequest, SearchCredHashErr{"Incorrect request body format: use {\"hash\": [string]}"})
+    respondWithJSON(w, http.StatusBadRequest, SearchCredHashErr{"Incorrect request body format: use {'hash': [string]}"})
+    return
+  }
+  compromised, err := SearchCredHash(db, []byte(s.Hash))
+  if err != nil {
+    respondWithJSON(w, http.StatusBadRequest, SearchCredHashErr{err.Error()})
   } else {
-    compromised, err := factory.SearchCredHash(db, []byte(s.Hash))
-    if err != nil {
-      respondWithJSON(w, http.StatusBadRequest, SearchCredHashErr{err.Error()})
-    } else {
-      respondWithJSON(w, http.StatusOK, SearchCredHashResponse{compromised})
-    }
+    respondWithJSON(w, http.StatusOK, SearchCredHashResponse{compromised})
   }
 }
 

@@ -1,11 +1,10 @@
-package app
+package server
 
 import (
 	"database/sql"
 	"log"
 	"net/http"
 	"github.com/gorilla/mux"
-	"ccds/src/handlers"
 )
 
 type App struct {
@@ -33,5 +32,5 @@ func (a *App) initializeRoutes() {
 }
 
 func (a *App) searchCredHashHandler(w http.ResponseWriter, r *http.Request) {
-	handlers.SearchCredHashHandler(w, r, a.DB)
+	SearchCredHashHandler(w, r, a.DB)
 }
