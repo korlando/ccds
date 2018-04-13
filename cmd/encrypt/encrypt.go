@@ -26,9 +26,9 @@ const CredDeleteFailed = "CredDelete"
 const IncrementFailed = "Increment"
 const PwInsertFailed = "PwInsert"
 
-const DataPath = "./data/data.tsv"
-const FailuresFilePath = "./data/failures.txt"
-const TempFailuresFilePath = "./data/failures.tmp.txt"
+const DataPath = "../../data/data.tsv"
+const FailuresFilePath = "../../data/failures.txt"
+const TempFailuresFilePath = "../../data/failures.tmp.txt"
 
 const dupeRegexp = "^Error 1062: Duplicate entry.+$"
 
@@ -335,5 +335,5 @@ func main() {
   defer db.Close()
   checkDB(db)
   // cleanUpFailures(FailuresFilePath)
-  doEncryption(db, 500000, 10000000)
+  doEncryption(db, 1000000, 12000000)
 }
