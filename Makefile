@@ -4,21 +4,24 @@ key=$(CCDS_SSH_KEY_PATH)
 sshhost=$(CCDS_AWS_HOST)
 version=$(shell cat .version)
 versionprod=$(shell cat .versionprod)
-port="8030"
+port=8030
 name=CCDSDevServer
 nameprod=CCDSProdServer
 binary=$(name)V$(version)
 binaryprod=$(nameprod)V$(versionprod)
 buildincrement:
 	go build -o bin/increment cmd/increment/increment.go
-increment: buildincrement
-	./bin/increment $(version) > .version
-incrementprod: buildincrement
-	./bin/increment $(versionprod) > .versionprod
-build: increment
-	go build -o bin/$(name)V$(shell cat .version) cmd/server/server.go
-buildprod: incrementprod
-	GOOS=linux GOARCH=amd64 go build -o bin/$(nameprod)V$(shell cat .versionprod) cmd/server/server.go
+# build before incrementing in case build fails
+build: buildincrement
+	go build -o bin/DEVBUILD cmd/server/server.go && \
+	new=$$(./bin/increment $(version)) && \
+	echo $$new > .version && \
+	mv bin/DEVBUILD bin/$(name)V$$new
+buildprod: buildincrement
+	GOOS=linux GOARCH=amd64 go build -o bin/PRODBUILD cmd/server/server.go && \
+	new=$$(./bin/increment $(versionprod)) && \
+	echo $$new > .versionprod && \
+	mv bin/PRODBUILD bin/$(nameprod)V$$new
 run:
 	./bin/$(binary) --port=$(port)
 runprod:

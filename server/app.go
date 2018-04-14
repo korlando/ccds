@@ -1,9 +1,14 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/gorilla/mux"
 )
@@ -25,7 +30,26 @@ func (a *App) Initialize(db *sql.DB) {
 }
 
 func (a *App) Run(addr string) {
-	log.Fatal(http.ListenAndServe(addr, a.RouterV1))
+	// https://github.com/gorilla/mux#graceful-shutdown
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: a.RouterV1,
+	}
+	log.Println("Starting CCDS server on", addr, "...")
+	go func() {
+		if err := srv.ListenAndServe(); err != nil {
+			log.Println(err)
+		}
+	}()
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
+	<-c
+	wait, _ := time.ParseDuration("15s")
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	log.Println("Shutting down CCDS server...")
+	srv.Shutdown(ctx)
+	os.Exit(0)
 }
 
 func (a *App) initializeRoutes() {
