@@ -335,5 +335,5 @@ func main() {
   defer db.Close()
   checkDB(db)
   // cleanUpFailures(FailuresFilePath)
-  doEncryption(db, 1000000, 12000000)
+  doEncryption(db, 1300000, 17700000)
 }
