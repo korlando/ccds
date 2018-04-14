@@ -10,6 +10,7 @@ nameprod=CCDSProdServer
 binary=$(name)V$(version)
 binaryprod=$(nameprod)V$(versionprod)
 buildincrement:
+	mkdir -p bin && \
 	go build -o bin/increment cmd/increment/increment.go
 # build before incrementing in case build fails
 build: buildincrement
@@ -17,8 +18,9 @@ build: buildincrement
 	new=$$(./bin/increment $(version)) && \
 	echo $$new > .version && \
 	mv bin/DEVBUILD bin/$(name)V$$new
+# production build strips debugging info
 buildprod: buildincrement
-	GOOS=linux GOARCH=amd64 go build -o bin/PRODBUILD cmd/server/server.go && \
+	GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o bin/PRODBUILD cmd/server/server.go && \
 	new=$$(./bin/increment $(versionprod)) && \
 	echo $$new > .versionprod && \
 	mv bin/PRODBUILD bin/$(nameprod)V$$new
@@ -42,4 +44,5 @@ restart: stop start
 restartprod: stopprod startprod
 push:
 	ssh -t -i $(key) $(sshhost) "mkdir -p $(awshome)/ccds && mkdir -p $(awshome)/ccds/bin" && \
+	scp -i $(key) ./.versionprod $(sshhost):$(awshome)/ccds/.versionprod && \
 	scp -i $(key) ./bin/$(binaryprod) $(sshhost):$(awshome)/ccds/bin/$(binaryprod)
