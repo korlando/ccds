@@ -6,6 +6,7 @@ import (
   "fmt"
   "log"
   "strconv"
+
   _ "github.com/go-sql-driver/mysql"
   "ccds/server"
 )
@@ -14,7 +15,7 @@ func main() {
   var port int
   var production bool
   var create bool
-  flag.IntVar(&port, "port", 8080, "Specify the port to run the server on.")
+  flag.IntVar(&port, "port", 8030, "Specify the port to run the server on.")
   flag.BoolVar(&production, "production", false, "Sets the server to production mode; uses production DB.")
   flag.BoolVar(&create, "c", false, "Run table creation queries.")
   flag.Parse()
@@ -39,6 +40,7 @@ func main() {
     if err != nil {
       log.Fatal(err)
     }
+    return
   }
   a := server.App{}
   a.Initialize(db)

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
+
 	"github.com/gorilla/mux"
 )
 
@@ -16,7 +17,7 @@ func (a *App) Initialize(db *sql.DB) {
 	a.DB = db
 	r := mux.NewRouter()
 	s := r.
-		PathPrefix("/ccds/api/v1").
+		PathPrefix("/ccds/v1").
 		Schemes("https").
 		Subrouter()
 	a.RouterV1 = s
