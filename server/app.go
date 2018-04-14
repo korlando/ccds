@@ -17,7 +17,7 @@ func (a *App) Initialize(db *sql.DB) {
 	a.DB = db
 	r := mux.NewRouter()
 	s := r.
-		PathPrefix("/ccds/v1").
+		PathPrefix("/v1").
 		Schemes("https").
 		Subrouter()
 	a.RouterV1 = s

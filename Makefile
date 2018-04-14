@@ -14,9 +14,9 @@ run:
 runprod:
 	./bin/$(binaryprod) --port=$(port) --production
 initdaemon:
-	touch ./ccds.log && \
-	touch ./ccds.pid && \
-	touch ./ccds.lock
+	touch ccds.log && \
+	touch ccds.pid && \
+	touch ccds.lock
 start:
 	make initdaemon && \
 	daemonize -a -e $(wd)/ccds.log -p $(wd)/ccds.pid -l $(wd)/ccds.lock $(wd)/bin/$(binary) --port=$(port)
@@ -24,9 +24,13 @@ startprod:
 	make initdaemon && \
 	daemonize -a -e $(wd)/ccds.log -p $(wd)/ccds.pid -l $(wd)/ccds.lock $(wd)/bin/$(binaryprod) --port=$(port) --production
 stop:
-	killall $(binaryprod) $(binary) || true
+	killall $(binary) || true
+stopprod:
+	killall $(binaryprod) || true
 restart:
 	make stop && make start
+restartprod:
+	make stopprod && make startprod
 push:
 	ssh -t -i $(key) $(sshhost) "mkdir -p $(awshome)/ccds && mkdir -p $(awshome)/ccds/bin" && \
 	scp -i $(key) ./bin/$(binaryprod) $(sshhost):$(awshome)/ccds/bin/$(binaryprod)
