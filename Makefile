@@ -13,13 +13,18 @@ run:
 	./bin/$(binary) --port=$(port)
 runprod:
 	./bin/$(binaryprod) --port=$(port) --production
-start:
+initdaemon:
 	touch ./ccds.log && \
 	touch ./ccds.pid && \
-	touch ./ccds.lock && \
+	touch ./ccds.lock
+start:
+	make initdaemon && \
 	daemonize -a -e $(wd)/ccds.log -p $(wd)/ccds.pid -l $(wd)/ccds.lock $(wd)/bin/$(binary) --port=$(port)
+startprod:
+	make initdaemon && \
+	daemonize -a -e $(wd)/ccds.log -p $(wd)/ccds.pid -l $(wd)/ccds.lock $(wd)/bin/$(binaryprod) --port=$(port) --production
 stop:
-	killall $(binary) || true
+	killall $(binaryprod) $(binary) || true
 restart:
 	make stop && make start
 push:
