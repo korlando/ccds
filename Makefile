@@ -11,7 +11,7 @@ binary=$(name)V$(version)
 binaryprod=$(nameprod)V$(versionprod)
 buildincrement:
 	mkdir -p bin && \
-	go build -o bin/increment cmd/increment/increment.go
+	go build -ldflags="-s -w" -o bin/increment cmd/increment/increment.go
 # build before incrementing in case build fails
 build: buildincrement
 	go build -o bin/DEVBUILD cmd/server/server.go && \
