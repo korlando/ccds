@@ -4,6 +4,7 @@ import (
   "bufio"
   "database/sql"
   "errors"
+  "flag"
   "fmt"
   "io/ioutil"
   "log"
@@ -151,23 +152,6 @@ func correctUpperCase(db *sql.DB, limit, offset int) ([]failure, error) {
     }
   }
   return failures, nil
-}
-
-func doEncryption(db *sql.DB, limit, offset int) {
-  start := time.Now()
-  totalEncryptionTime, numEncryptions, failures, err := encryptAndInsertAll(db, DataPath, limit, offset)
-  if err != nil {
-    log.Fatal(err)
-  }
-  // totalEncryptionTime, numEncryptions := readAllFiles("./data", 5)
-  fmt.Println(numEncryptions, "credentials read, encrypted, and inserted in", time.Since(start))
-  fmt.Println("Number of failures:", len(failures))
-  avgDur, err := time.ParseDuration(strconv.FormatInt(totalEncryptionTime / int64(numEncryptions), 10) + "ns")
-  if err != nil {
-    log.Fatal(err)
-  }
-  fmt.Println("Average argon2id run time:", avgDur)
-  writeFailures(failures, FailuresFilePath)
 }
 
 // set limit to -1 (or anything < 0) to read all lines
@@ -334,6 +318,25 @@ func main() {
   }
   defer db.Close()
   checkDB(db)
-  // cleanUpFailures(FailuresFilePath)
-  doEncryption(db, 300000, 22200000)
+  path := DataPath
+  if len(os.Args) > 1 {
+    path = os.Args[1]
+  }
+  var limit int
+  var offset int
+  flag.IntVar(&limit, "limit", 0, "Limit on the number of credentials to encrypt.")
+  flag.IntVar(&offset, "offset", 0, "Offset the position in the credential list.")
+  start := time.Now()
+  totalEncryptionTime, numEncryptions, failures, err := encryptAndInsertAll(db, path, 300000, 22200000)
+  if err != nil {
+    log.Fatal(err)
+  }
+  fmt.Println(numEncryptions, "credentials read, encrypted, and inserted in", time.Since(start))
+  fmt.Println("Number of failures:", len(failures))
+  avgDur, err := time.ParseDuration(strconv.FormatInt(totalEncryptionTime / int64(numEncryptions), 10) + "ns")
+  if err != nil {
+    log.Fatal(err)
+  }
+  fmt.Println("Average argon2id run time:", avgDur)
+  writeFailures(failures, FailuresFilePath)
 }

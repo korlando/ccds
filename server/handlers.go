@@ -1,6 +1,7 @@
 package server
 
 import (
+  "bytes"
   "database/sql"
   "encoding/json"
   "io"
@@ -20,13 +21,17 @@ type SearchCredHashErr struct {
 }
 
 func SearchCredHashHandler(w http.ResponseWriter, r *http.Request, db *sql.DB) {
-  var s SearchCredHashRequestBody
-  err := decodeBody(r.Body, &s)
+  l := r.ContentLength
+  if l == -1 {
+    l = 64
+  }
+  b := bytes.NewBuffer(make([]byte, 0, l))
+  _, err := b.ReadFrom(r.Body)
   if err != nil {
-    respondWithJSON(w, http.StatusBadRequest, SearchCredHashErr{"Incorrect request body format: use {'hash': [string]}"})
+    respondWithJSON(w, http.StatusBadRequest, SearchCredHashErr{"An error occurred while reading the hash bytes"})
     return
   }
-  compromised, err := SearchCredHash(db, []byte(s.Hash))
+  compromised, err := SearchCredHash(db, b.Bytes())
   if err != nil {
     respondWithJSON(w, http.StatusBadRequest, SearchCredHashErr{err.Error()})
   } else {
