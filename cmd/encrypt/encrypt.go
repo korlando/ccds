@@ -169,7 +169,7 @@ func encryptAndInsertAll(db *sql.DB, path string, limit, offset int) (int64, int
   lineCount := 0
   for (limit < 0 || lineCount < limit + offset) && scanner.Scan() {
     lineCount += 1
-    if lineCount < offset {
+    if lineCount <= offset {
       continue
     }
     line := strings.TrimSpace(scanner.Text())
@@ -194,11 +194,8 @@ func encryptAndInsertAll(db *sql.DB, path string, limit, offset int) (int64, int
       // }
     }
     if numEncryptions > 0 && numEncryptions % 10000 == 0 {
-      fmt.Println(numEncryptions, "credentials encrypted and inserted in", time.Since(start), "so far")
-      avgDur, err := time.ParseDuration(strconv.FormatInt(totalEncryptionTime / int64(numEncryptions), 10) + "ns")
-      if err == nil {
-        fmt.Println("Average argon2id run time so far:", avgDur)
-      }
+      fmt.Println(numEncryptions, "credentials encrypted in", time.Since(start), "so far")
+      printAvgDur(totalEncryptionTime, numEncryptions, "Average argon2id run time so far:")
     }
   }
   if err := scanner.Err(); err != nil {
@@ -207,18 +204,48 @@ func encryptAndInsertAll(db *sql.DB, path string, limit, offset int) (int64, int
   return totalEncryptionTime, numEncryptions, failures, nil
 }
 
+func encryptionThread(db *sql.DB, path string, limit, offset int, errChan chan error, failureChan chan []failure) {
+  start := time.Now()
+  totalEncryptionTime, numEncryptions, failures, err := encryptAndInsertAll(db, path, limit, offset)
+  if err != nil {
+    errChan <- err
+    failureChan <- failures
+    return
+  }
+  fmt.Println(numEncryptions, "credentials encrypted in", time.Since(start))
+  fmt.Println("Number of failures:", len(failures))
+  printAvgDur(totalEncryptionTime, numEncryptions, "")
+  errChan <- nil
+  failureChan <- failures
+}
+
 func parseCredential(cred string) (string, string, error) {
   tabMatched, _ := regexp.MatchString("^[^\\t]+\\t[^\\t]+$", cred)
   if tabMatched {
-  	result := strings.Split(cred, "\t")
-  	return result[0], result[1], nil
+    result := strings.Split(cred, "\t")
+    return result[0], result[1], nil
   }
- 	spaceMatched, _ := regexp.MatchString("^[^\\s]+\\s[^\\s]+$", cred)
- 	if spaceMatched {
- 		result := strings.Split(cred, " ")
- 		return result[0], result[1], nil
- 	}
- 	return "", "", errors.New("Unable to parse credential " + cred)
+  spaceMatched, _ := regexp.MatchString("^[^\\s]+\\s[^\\s]+$", cred)
+  if spaceMatched {
+    result := strings.Split(cred, " ")
+    return result[0], result[1], nil
+  }
+  return "", "", errors.New("Unable to parse credential " + cred)
+}
+
+func printAvgDur(total int64, num int, desc string) {
+  if desc == "" {
+    desc = "Average argon2id run time:"
+  }
+  avgDur, _ := time.ParseDuration("0ms")
+  if num != 0 {
+    avg, err := time.ParseDuration(strconv.FormatInt(total / int64(num), 10) + "ns")
+    if err != nil {
+      return
+    }
+    avgDur = avg
+  }
+  fmt.Println(desc, avgDur)
 }
 
 func readAllFiles(from string, lineLimit int) (int64, int) {
@@ -269,11 +296,11 @@ func readAllFiles(from string, lineLimit int) (int64, int) {
   return totalEncryptionTime, numEncryptions
 }
 
-func runArgon2id(password, salt []byte, iterations, memory uint32, threads uint8, keyLen uint32) ([]byte, time.Duration) {
+func runArgon2id(password, salt []byte, iterations, memory uint32, threads uint8, keyLen uint32) (key []byte, execTime time.Duration) {
   start := time.Now()
-  key := argon2.IDKey(password, salt, iterations, memory, threads, keyLen)
-  execTime := time.Since(start)
-  return key, execTime
+  key = argon2.IDKey(password, salt, iterations, memory, threads, keyLen)
+  execTime = time.Since(start)
+  return
 }
 
 func searchHash(db *sql.DB, hash []byte) (bool, error) {
@@ -318,25 +345,43 @@ func main() {
   }
   defer db.Close()
   checkDB(db)
-  path := DataPath
-  if len(os.Args) > 1 {
-    path = os.Args[1]
-  }
+  var path string
   var limit int
   var offset int
+  var threads int
+  flag.StringVar(&path, "path", DataPath, "Path to the data file.")
   flag.IntVar(&limit, "limit", 0, "Limit on the number of credentials to encrypt.")
   flag.IntVar(&offset, "offset", 0, "Offset the position in the credential list.")
+  flag.IntVar(&threads, "threads", 1, "Number of threads to parallelize reading and encryption of the file.")
+  flag.Parse()
+  limit = 100000
+  offset = 22700000
   start := time.Now()
-  totalEncryptionTime, numEncryptions, failures, err := encryptAndInsertAll(db, path, 300000, 22200000)
-  if err != nil {
-    log.Fatal(err)
+  errChan := make(chan error)
+  failureChan := make(chan []failure)
+  step := limit / threads
+  remaining := limit - (step * threads)
+  lastLine := 0
+  // split up the work
+  for i := 0; i < threads; i += 1 {
+    extra := 0
+    if i < remaining {
+      extra = 1
+    }
+    numLines := step + extra
+    go encryptionThread(db, path, numLines, lastLine + offset, errChan, failureChan)
+    lastLine += numLines
   }
-  fmt.Println(numEncryptions, "credentials read, encrypted, and inserted in", time.Since(start))
-  fmt.Println("Number of failures:", len(failures))
-  avgDur, err := time.ParseDuration(strconv.FormatInt(totalEncryptionTime / int64(numEncryptions), 10) + "ns")
-  if err != nil {
-    log.Fatal(err)
+  allFailures := []failure{}
+  // wait for chan responses
+  for i := 0; i < threads; i += 1 {
+    err := <- errChan
+    failures := <- failureChan
+    if err != nil {
+      fmt.Println(err)
+    }
+    allFailures = append(allFailures, failures...)
   }
-  fmt.Println("Average argon2id run time:", avgDur)
-  writeFailures(failures, FailuresFilePath)
+  writeFailures(allFailures, FailuresFilePath)
+  fmt.Println("Run time:", time.Since(start))
 }
