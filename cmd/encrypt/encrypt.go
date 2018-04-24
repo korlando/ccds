@@ -352,10 +352,20 @@ func main() {
   flag.StringVar(&path, "path", DataPath, "Path to the data file.")
   flag.IntVar(&limit, "limit", 0, "Limit on the number of credentials to encrypt.")
   flag.IntVar(&offset, "offset", 0, "Offset the position in the credential list.")
-  flag.IntVar(&threads, "threads", 1, "Number of threads to parallelize reading and encryption of the file.")
+  flag.IntVar(&threads, "threads", 1, "Number of threads to parallelize reading and encryption of the file (not parallelism to use in argon2id).")
   flag.Parse()
-  limit = 100000
-  offset = 22700000
+  info, err := os.Stat(path)
+  if err != nil && os.IsNotExist(err) {
+    log.Fatal("File at " + path + " does not exist.")
+  }
+  if info.IsDir() {
+    log.Fatal("File at " + path + " is a directory.")
+  }
+  if threads <= 0 {
+    log.Fatal("Threads should be at least 1.")
+  }
+  limit = 200000
+  offset = 25400000
   start := time.Now()
   errChan := make(chan error)
   failureChan := make(chan []failure)
