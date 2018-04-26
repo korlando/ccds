@@ -195,7 +195,7 @@ func encryptAndInsertAll(db *sql.DB, path string, limit, offset int) (int64, int
     }
     if numEncryptions > 0 && numEncryptions % 10000 == 0 {
       fmt.Println(numEncryptions, "credentials encrypted in", time.Since(start), "so far")
-      printAvgDur(totalEncryptionTime, numEncryptions, "Average argon2id run time so far:")
+      printAvgDur(totalEncryptionTime, numEncryptions, "Avg argon2id run time so far:")
     }
   }
   if err := scanner.Err(); err != nil {
@@ -213,7 +213,6 @@ func encryptionThread(db *sql.DB, path string, limit, offset int, errChan chan e
     return
   }
   fmt.Println(numEncryptions, "credentials encrypted in", time.Since(start))
-  fmt.Println("Number of failures:", len(failures))
   printAvgDur(totalEncryptionTime, numEncryptions, "")
   errChan <- nil
   failureChan <- failures
@@ -235,9 +234,10 @@ func parseCredential(cred string) (string, string, error) {
 
 func printAvgDur(total int64, num int, desc string) {
   if desc == "" {
-    desc = "Average argon2id run time:"
+    desc = "Avg argon2id run time:"
   }
   avgDur, _ := time.ParseDuration("0ms")
+  avgSpeed := "0"
   if num != 0 {
     avg, err := time.ParseDuration(strconv.FormatInt(total / int64(num), 10) + "ns")
     if err != nil {
@@ -245,7 +245,10 @@ func printAvgDur(total int64, num int, desc string) {
     }
     avgDur = avg
   }
-  fmt.Println(desc, avgDur)
+  if total != 0 {
+    avgSpeed = strconv.FormatFloat((float64(num) * 1000000000) / float64(total), 'f', 5, 64)
+  }
+  fmt.Println(desc, avgDur, "(" + avgSpeed + " hashes/sec)")
 }
 
 func readAllFiles(from string, lineLimit int) (int64, int) {
@@ -365,7 +368,7 @@ func main() {
     log.Fatal("Threads should be at least 1.")
   }
   limit = 200000
-  offset = 25400000
+  offset = 30200000
   start := time.Now()
   errChan := make(chan error)
   failureChan := make(chan []failure)
@@ -394,4 +397,5 @@ func main() {
   }
   writeFailures(allFailures, FailuresFilePath)
   fmt.Println("Run time:", time.Since(start))
+  fmt.Println("Number of failures:", len(allFailures))
 }
