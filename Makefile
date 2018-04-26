@@ -9,8 +9,11 @@ name=CCDSDevServer
 nameprod=CCDSProdServer
 binary=$(name)V$(version)
 binaryprod=$(nameprod)V$(versionprod)
-buildincrement:
-	mkdir -p bin && \
+mkbin:
+	mkdir -p bin
+buildencrypt: mkbin
+	go build -o bin/encrypt cmd/encrypt/encrypt.go
+buildincrement: mkbin
 	go build -ldflags="-s -w" -o bin/increment cmd/increment/increment.go
 # build before incrementing in case build fails
 build: buildincrement
