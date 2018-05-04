@@ -9,40 +9,35 @@ import (
   "strings"
 )
 
-// Lower, Upper, Numbers, and Symbols are
-// int representations of booleans (0 or 1)
 type PWData struct{
   Count int
   Length int
-  Lower int
-  Upper int
-  Numbers int
-  Symbols int
+  Lower bool
+  Upper bool
+  Numbers bool
+  Symbols bool
 }
 
-func AnalyzePW(pw string) PWData {
-  length := len(pw)
+func AnalyzePW(pw string) (d PWData) {
+  d.Count = 1
+  d.Length = len(pw)
   hasLower, _ := regexp.MatchString("[a-z]", pw)
   hasUpper, _ := regexp.MatchString("[A-Z]", pw)
   hasNumbers, _ := regexp.MatchString("[0-9]", pw)
   hasSymbols, _ := regexp.MatchString("[^a-zA-Z0-9]", pw)
-  var low int
-  var up int
-  var num int
-  var sym int
   if hasLower {
-    low = 1
+    d.Lower = true
   }
   if hasUpper {
-    up = 1
+    d.Upper = true
   }
   if hasNumbers {
-    num = 1
+    d.Numbers = true
   }
   if hasSymbols {
-    sym = 1
+    d.Symbols = true
   }
-  return PWData{1, length, low, up, num, sym}
+  return
 }
 
 // counts the number of lines in the file at path

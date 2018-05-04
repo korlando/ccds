@@ -17,8 +17,5 @@ const CredHashTableCreate = `
 
 func CreateTables(db *sql.DB) (err error) {
   _, err = db.Exec(CredHashTableCreate)
-  if err != nil {
-    return
-  }
   return
 }
