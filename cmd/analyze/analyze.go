@@ -10,6 +10,7 @@ import (
   "os"
   "strings"
   "time"
+  "unsafe"
 
   "ccds"
 )
@@ -19,6 +20,8 @@ const statsPath = "../../data/pw-stats.json"
 
 // tracks the totals, whereas stat stores percentage
 type statHelper struct{
+  totPW int
+  totUniquePW int
   up int
   low int
   let int
@@ -60,9 +63,9 @@ type stat struct{
   NumSymOnly float64 `json:"hasNumbersAndSymbolsOnly"`
 }
 
-func analysisThread(path string, limit, offset int, mapChan chan *map[string]*ccds.PWData, errChan chan error) {
-  m, err := analyzeAll(path, limit, offset)
-  mapChan <- &m
+func analysisThread(path string, limit, offset int, cacheLimit int, helperChan chan *statHelper, errChan chan error) {
+  h, err := analyzeAll(path, limit, offset, cacheLimit)
+  helperChan <- h
   if err != nil {
     errChan <- err
     return
@@ -71,7 +74,7 @@ func analysisThread(path string, limit, offset int, mapChan chan *map[string]*cc
 }
 
 // set limit to -1 (or anything < 0) to read all lines
-func analyzeAll(path string, limit, offset int) (m map[string]*ccds.PWData, err error) {
+func analyzeAll(path string, limit, offset int, cacheLimit int) (h *statHelper, err error) {
   file, err := os.Open(path)
   if err != nil {
     return
@@ -79,7 +82,12 @@ func analyzeAll(path string, limit, offset int) (m map[string]*ccds.PWData, err 
   defer file.Close()
   scanner := bufio.NewScanner(file)
   lines := 0
-  m = make(map[string]*ccds.PWData)
+  h = &statHelper{}
+  m := make(map[string]*ccds.PWData)
+  // track the set of passwords
+  p := make(map[string]bool)
+  mSize := int(unsafe.Sizeof(m))
+  pSize := int(unsafe.Sizeof(p))
   for (limit < 0 || lines < limit + offset) && scanner.Scan() {
     lines += 1
     if lines <= offset {
@@ -96,17 +104,60 @@ func analyzeAll(path string, limit, offset int) (m map[string]*ccds.PWData, err 
     } else {
       data := ccds.AnalyzePW(pw)
       m[pw] = &data
+      mSize += 8 + (8 * len(pw)) + (8 * int(unsafe.Sizeof(data)))
+    }
+    // reset cache to clear up some memory
+    if mSize >= cacheLimit {
+      for pw, d = range m {
+        exists := p[pw]
+        updateStats(h, d, exists)
+        if !exists {
+          // move passwords to a different set to track uniqueness
+          p[pw] = true
+          pSize += 8 + (8* len(pw)) + 64
+        }
+      }
+      m = make(map[string]*ccds.PWData)
+      mSize = int(unsafe.Sizeof(m))
     }
   }
   if err := scanner.Err(); err != nil {
     fmt.Printf("Invalid input: %s\n", err)
   }
-  fmt.Println("")
+  for pw, d := range m {
+    exists := p[pw]
+    updateStats(h, d, exists)
+  }
   return
 }
 
+// merges h2's stats into h1
+func mergeHelpers(h1, h2 *statHelper) {
+  h1.totPW += h2.totPW
+  h1.totUniquePW += h2.totUniquePW
+  h1.up += h2.up
+  h1.low += h2.low
+  h1.let += h2.let
+  h1.num += h2.num
+  h1.sym += h2.sym
+  h1.letNum += h2.letNum
+  h1.letSym += h2.letSym
+  h1.numSym += h2.numSym
+  h1.letNumSym += h2.letNumSym
+  h1.upOnly += h2.upOnly
+  h1.lowOnly += h2.lowOnly
+  h1.letOnly += h2.letOnly
+  h1.numOnly += h2.numOnly
+  h1.symOnly += h2.symOnly
+  h1.letNumOnly += h2.letNumOnly
+  h1.letSymOnly += h2.letSymOnly
+  h1.numSymOnly += h2.numSymOnly
+}
+
 func updatePercentages(s *stat, h *statHelper) {
-  tot := float64(s.TotUniquePW)
+  s.TotPW = h.totPW
+  s.TotUniquePW = h.totUniquePW
+  tot := float64(h.totUniquePW)
   if tot == 0 {
     return
   }
@@ -122,14 +173,19 @@ func updatePercentages(s *stat, h *statHelper) {
   s.UpOnly = float64(h.upOnly) / tot
   s.LowOnly = float64(h.lowOnly) / tot
   s.LetOnly = float64(h.letOnly) / tot
+  s.NumOnly = float64(h.numOnly) / tot
+  s.SymOnly = float64(h.symOnly) / tot
   s.LetNumOnly = float64(h.letNumOnly) / tot
   s.LetSymOnly = float64(h.letSymOnly) / tot
   s.NumSymOnly = float64(h.numSymOnly) / tot
 }
 
-func updateStats(s *stat, h *statHelper, d *ccds.PWData) {
-  s.TotPW += d.Count
-  s.TotUniquePW += 1
+func updateStats(h *statHelper, d *ccds.PWData, exists bool) {
+  h.totPW += d.Count
+  if exists {
+    return
+  }
+  h.totUniquePW += 1
   let := d.Upper || d.Lower
   if d.Upper {
     h.up += 1
@@ -198,10 +254,12 @@ func main() {
   var limit int
   var offset int
   var threads int
+  var cacheLimit int
   flag.StringVar(&path, "path", dataPath, "Path to the data file.")
   flag.IntVar(&limit, "limit", 0, "Limit on the number of credentials to read.")
   flag.IntVar(&offset, "offset", 0, "Offset the line to start reading from (0-indexed).")
   flag.IntVar(&threads, "threads", 1, "Number of threads to parallelize reading of the file.")
+  flag.IntVar(&cacheLimit, "cache", 100000, "Limit on size in bytes of the hashmap cache of passwords.")
   flag.Parse()
   info, err := os.Stat(path)
   if err != nil && os.IsNotExist(err) {
@@ -222,9 +280,10 @@ func main() {
     limit = lines
   }
   start := time.Now()
+  helperChan := make(chan *statHelper)
   errChan := make(chan error)
-  mapChan := make(chan *map[string]*ccds.PWData)
   step := limit / threads
+  cacheLimit = cacheLimit / threads
   remaining := limit - (step * threads)
   lastLine := 0
   // split up the work
@@ -234,38 +293,27 @@ func main() {
       extra = 1
     }
     numLines := step + extra
-    go analysisThread(path, numLines, lastLine + offset, mapChan, errChan)
+    go analysisThread(path, numLines, lastLine + offset, cacheLimit, helperChan, errChan)
     lastLine += numLines
   }
-  pwMap := make(map[string]*ccds.PWData)
   s := &stat{}
-  h := &statHelper{}
+  helper := &statHelper{}
   // wait for chan responses
   for i := 0; i < threads; i += 1 {
-    m := <- mapChan
+    h := <- helperChan
     err := <- errChan
     if err != nil {
       fmt.Println(err)
     }
-    // merge into one map; this needs to happen
+    // merge statHelpers; this needs to happen
     // before updateStats() to avoid duplicates
     if threads == 1 {
-      pwMap = *m
+      helper = h
       continue
     }
-    for pw, d := range *m {
-      existing, ok := pwMap[pw]
-      if ok {
-        existing.Count += d.Count
-      } else {
-        pwMap[pw] = d
-      }
-    }
+    mergeHelpers(helper, h)
   }
-  for _, d := range pwMap {
-    updateStats(s, h, d)
-  }
-  updatePercentages(s, h)
+  updatePercentages(s, helper)
   err = writeStats(s, statsPath)
   if err != nil {
     fmt.Println(err)
