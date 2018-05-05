@@ -44,6 +44,7 @@ type statHelper struct{
 type stat struct{
   TotPW int `json:"totalPasswords"`
   TotUniquePW int `json:"totalUniquePasswords"`
+  Unique float64 `json:"uniquePasswordsPercent"`
   Up float64 `json:"hasUppercase"`
   Low float64 `json:"hasLowercase"`
   Let float64 `json:"hasLetters"`
@@ -103,11 +104,15 @@ func analyzeAll(path string, limit, offset int, cacheLimit int) (h *statHelper, 
       d.Count += 1
     } else {
       data := ccds.AnalyzePW(pw)
-      m[pw] = &data
-      mSize += 8 + (8 * len(pw)) + (8 * int(unsafe.Sizeof(data)))
+      // 0 means don't cache at all
+      if cacheLimit != 0 {
+        m[pw] = &data
+        // rough estimate of key/value size in bytes
+        mSize += 8 + (8 * len(pw)) + (8 * int(unsafe.Sizeof(data)))
+      }
     }
     // reset cache to clear up some memory
-    if mSize >= cacheLimit {
+    if cacheLimit >= 0 && mSize >= cacheLimit {
       for pw, d = range m {
         exists := p[pw]
         updateStats(h, d, exists)
@@ -161,6 +166,7 @@ func updatePercentages(s *stat, h *statHelper) {
   if tot == 0 {
     return
   }
+  s.Unique = tot / float64(totPW)
   s.Up = float64(h.up) / tot
   s.Low = float64(h.low) / tot
   s.Let = float64(h.let) / tot
@@ -259,7 +265,7 @@ func main() {
   flag.IntVar(&limit, "limit", 0, "Limit on the number of credentials to read.")
   flag.IntVar(&offset, "offset", 0, "Offset the line to start reading from (0-indexed).")
   flag.IntVar(&threads, "threads", 1, "Number of threads to parallelize reading of the file.")
-  flag.IntVar(&cacheLimit, "cache", 100000, "Limit on size in bytes of the hashmap cache of passwords.")
+  flag.IntVar(&cacheLimit, "cache", 100000, "Limit on size in bytes of the hashmap cache of passwords. Set to -1 to remove limit.")
   flag.Parse()
   info, err := os.Stat(path)
   if err != nil && os.IsNotExist(err) {

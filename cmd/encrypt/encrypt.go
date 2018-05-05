@@ -111,6 +111,7 @@ func printAvgDur(total int64, num int, desc string) {
 
 func runArgon2id(password, salt []byte, iterations, memory uint32, threads uint8, keyLen uint32) (key []byte, execTime time.Duration) {
   start := time.Now()
+  // https://github.com/golang/crypto/blob/master/argon2/argon2.go
   key = argon2.IDKey(password, salt, iterations, memory, threads, keyLen)
   execTime = time.Since(start)
   return
@@ -169,8 +170,8 @@ func main() {
   if threads <= 0 {
     log.Fatal("Threads should be at least 1.")
   }
-  limit = 100000//200000
-  offset = 0//30200000
+  limit = 200000
+  offset = 30400000
   if limit < 0 {
     fmt.Println("Calculating number of credentials...")
     lines, err := ccds.CountLines(path)
