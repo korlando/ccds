@@ -75,9 +75,10 @@ type stat struct{
   Lengths map[int]int `json:"passwordLengths"`
 }
 
-func analysisThread(path string, limit, offset int, cacheLimit int, helperChan chan *statHelper, errChan chan error) {
-  h, err := analyzeAll(path, limit, offset, cacheLimit)
+func analysisThread(path string, limit, offset int, cacheLimit int, helperChan chan *statHelper, cacheChan chan map[string]ccds.PWData, errChan chan error) {
+  h, cache, err := analyzeAll(path, limit, offset, cacheLimit)
   helperChan <- &h
+  cacheChan <- cache
   if err != nil {
     errChan <- err
     return
@@ -87,7 +88,7 @@ func analysisThread(path string, limit, offset int, cacheLimit int, helperChan c
 
 // set limit to -1 (or anything < 0) to read all lines
 // set cacheLimit to -1 to remove memory bound on cache
-func analyzeAll(path string, limit, offset int, cacheLimit int) (h statHelper, err error) {
+func analyzeAll(path string, limit, offset int, cacheLimit int) (h statHelper, cache map[string]ccds.PWData, err error) {
   db, err := server.GetDevDB()
   if err != nil {
     return
@@ -107,7 +108,7 @@ func analyzeAll(path string, limit, offset int, cacheLimit int) (h statHelper, e
   h = statHelper{}
   lengths := make(map[int]int)
   h.lengths = &lengths
-  cache := make(map[string]ccds.PWData)
+  cache = make(map[string]ccds.PWData)
   cacheSize := int(unsafe.Sizeof(cache))
   for (limit < 0 || lines < limit + offset) && scanner.Scan() {
     lines += 1
@@ -146,9 +147,6 @@ func analyzeAll(path string, limit, offset int, cacheLimit int) (h statHelper, e
   }
   if err := scanner.Err(); err != nil {
     fmt.Printf("Invalid input: %s\n", err)
-  }
-  for _, d := range cache {
-    updateStats(&h, d, false)
   }
   return
 }
@@ -259,25 +257,18 @@ func mergeHelpers(h1, h2 *statHelper) {
   }
 }
 
-// h1 and p1 are main
-// h2 and p2 come from the thread
-func mergeThreadResults(h1, h2 *statHelper, p1, p2 *map[string]bool) (collisions int) {
+// h1 and c1 are main
+// h2 and c2 come from the thread
+func mergeThreadResults(h1, h2 *statHelper, c1, c2 *map[string]ccds.PWData) (collisions int) {
   mergeHelpers(h1, h2)
   collisions = 0
-  // for every password collision between the maps, need to adjust stats
-  for pw2 := range *p2 {
-    if (*p1)[pw2] {
-      d := ccds.AnalyzePW(pw2)
-      // create a negated statHelper
-      neg := &statHelper{}
-      lengths := make(map[int]int)
-      neg.lengths = &lengths
-      incrementHelper(neg, d, -1)
-      mergeHelpers(h1, neg)
+  for pw, d2 := range *c2 {
+    d1, ok := (*c1)[pw]
+    if ok {
+      d2.Count += d1.Count
       collisions += 1
-    } else {
-      (*p1)[pw2] = true
     }
+    (*c1)[pw] = d2
   }
   return
 }
@@ -362,6 +353,7 @@ func main() {
   }
   start := time.Now()
   helperChan := make(chan *statHelper)
+  cacheChan := make(chan map[string]ccds.PWData)
   errChan := make(chan error)
   step := limit / threads
   if cacheLimit > 0 {
@@ -376,25 +368,31 @@ func main() {
       extra = 1
     }
     numLines := step + extra
-    go analysisThread(path, numLines, lastLine + offset, cacheLimit, helperChan, errChan)
+    go analysisThread(path, numLines, lastLine + offset, cacheLimit, helperChan, cacheChan, errChan)
     lastLine += numLines
   }
   s := &stat{}
   helper := &statHelper{}
   lengths := make(map[int]int)
   helper.lengths = &lengths
+  cache := make(map[string]ccds.PWData)
   // wait for chan responses
   for i := 0; i < threads; i += 1 {
     h := <- helperChan
+    c := <- cacheChan
     err := <- errChan
     if err != nil {
       fmt.Println(err)
     }
     if threads == 1 {
       helper = h
+      cache = c
       continue
     }
-    mergeHelpers(helper, h)
+    mergeThreadResults(helper, h, &cache, &c)
+  }
+  for _, d := range cache {
+    updateStats(helper, d, false)
   }
   updatePercentages(s, helper)
   err = writeStats(s, statsPath)
