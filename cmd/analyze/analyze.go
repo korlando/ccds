@@ -39,6 +39,9 @@ type statHelper struct{
   letNumOnly int
   letSymOnly int
   numSymOnly int
+  fmt1 int
+  fmt2 int
+  lengths *map[int]int // key: pw length, value: num pws
 }
 
 type stat struct{
@@ -62,11 +65,15 @@ type stat struct{
   LetNumOnly float64 `json:"hasLettersAndNumbersOnly"`
   LetSymOnly float64 `json:"hasLettersAndSymbolsOnly"`
   NumSymOnly float64 `json:"hasNumbersAndSymbolsOnly"`
+  Fmt1 float64 `json:"format^[a-zA-Z]+[0-9]+$"`
+  Fmt2 float64 `json:"format^[0-9]+[a-zA-Z]+$"`
+  Lengths map[int]int `json:"passwordLengths"`
 }
 
-func analysisThread(path string, limit, offset int, cacheLimit int, helperChan chan *statHelper, errChan chan error) {
-  h, err := analyzeAll(path, limit, offset, cacheLimit)
-  helperChan <- h
+func analysisThread(path string, limit, offset int, cacheLimit int, helperChan chan *statHelper, pwChan chan *map[string]bool, errChan chan error) {
+  h, p, err := analyzeAll(path, limit, offset, cacheLimit)
+  helperChan <- &h
+  pwChan <- &p
   if err != nil {
     errChan <- err
     return
@@ -75,7 +82,8 @@ func analysisThread(path string, limit, offset int, cacheLimit int, helperChan c
 }
 
 // set limit to -1 (or anything < 0) to read all lines
-func analyzeAll(path string, limit, offset int, cacheLimit int) (h *statHelper, err error) {
+// set cacheLimit to -1 to remove memory bound on cache
+func analyzeAll(path string, limit, offset int, cacheLimit int) (h statHelper, p map[string]bool, err error) {
   file, err := os.Open(path)
   if err != nil {
     return
@@ -83,12 +91,13 @@ func analyzeAll(path string, limit, offset int, cacheLimit int) (h *statHelper, 
   defer file.Close()
   scanner := bufio.NewScanner(file)
   lines := 0
-  h = &statHelper{}
+  h = statHelper{}
+  lengths := make(map[int]int)
+  h.lengths = &lengths
   m := make(map[string]*ccds.PWData)
   // track the set of passwords
-  p := make(map[string]bool)
+  p = make(map[string]bool)
   mSize := int(unsafe.Sizeof(m))
-  pSize := int(unsafe.Sizeof(p))
   for (limit < 0 || lines < limit + offset) && scanner.Scan() {
     lines += 1
     if lines <= offset {
@@ -104,22 +113,18 @@ func analyzeAll(path string, limit, offset int, cacheLimit int) (h *statHelper, 
       d.Count += 1
     } else {
       data := ccds.AnalyzePW(pw)
-      // 0 means don't cache at all
-      if cacheLimit != 0 {
-        m[pw] = &data
-        // rough estimate of key/value size in bytes
-        mSize += 8 + (8 * len(pw)) + (8 * int(unsafe.Sizeof(data)))
-      }
+      m[pw] = &data
+      // rough estimate of key/value size in bytes
+      mSize += 8 + (8 * len(pw)) + (8 * int(unsafe.Sizeof(data)))
     }
     // reset cache to clear up some memory
     if cacheLimit >= 0 && mSize >= cacheLimit {
       for pw, d = range m {
         exists := p[pw]
-        updateStats(h, d, exists)
+        updateStats(&h, d, exists)
         if !exists {
           // move passwords to a different set to track uniqueness
           p[pw] = true
-          pSize += 8 + (8* len(pw)) + 64
         }
       }
       m = make(map[string]*ccds.PWData)
@@ -131,9 +136,81 @@ func analyzeAll(path string, limit, offset int, cacheLimit int) (h *statHelper, 
   }
   for pw, d := range m {
     exists := p[pw]
-    updateStats(h, d, exists)
+    updateStats(&h, d, exists)
+    if !exists {
+      p[pw] = true
+    }
   }
   return
+}
+
+// logic for incrementing stats by "a" amount
+func incrementHelper(h *statHelper, d *ccds.PWData, a int) {
+  h.totUniquePW += a
+  let := d.Upper || d.Lower
+  if d.Upper {
+    h.up += a
+    if !d.Lower && !d.Numbers && !d.Symbols {
+      h.upOnly += a
+    }
+  }
+  if d.Lower {
+    h.low += a
+    if !d.Upper && !d.Numbers && !d.Symbols {
+      h.lowOnly += a
+    }
+  }
+  if let {
+    h.let += a
+    if !d.Numbers && !d.Symbols {
+      h.letOnly += a
+    }
+  }
+  if d.Numbers {
+    h.num += a
+    if !let && !d.Symbols {
+      h.numOnly += a
+    }
+  }
+  if d.Symbols {
+    h.sym += a
+    if !let && !d.Numbers {
+      h.symOnly += a
+    }
+  }
+  if let && d.Numbers {
+    h.letNum += a
+    if !d.Symbols {
+      h.letNumOnly += a
+    }
+  }
+  if let && d.Symbols {
+    h.letSym += a
+    if !d.Numbers {
+      h.letSymOnly += a
+    }
+  }
+  if d.Numbers && d.Symbols {
+    h.numSym += a
+    if !let {
+      h.numSymOnly += a
+    }
+  }
+  if let && d.Numbers && d.Symbols {
+    h.letNumSym += a
+  }
+  if d.Fmt1 {
+    h.fmt1 += a
+  }
+  if d.Fmt2 {
+    h.fmt2 += a
+  }
+  _, ok := (*h.lengths)[d.Length]
+  if ok {
+    (*h.lengths)[d.Length] += a
+  } else {
+    (*h.lengths)[d.Length] = a
+  }
 }
 
 // merges h2's stats into h1
@@ -157,6 +234,43 @@ func mergeHelpers(h1, h2 *statHelper) {
   h1.letNumOnly += h2.letNumOnly
   h1.letSymOnly += h2.letSymOnly
   h1.numSymOnly += h2.numSymOnly
+  h1.fmt1 += h2.fmt1
+  h1.fmt2 += h2.fmt2
+  for pwLen := range *h1.lengths {
+    count, ok := (*h2.lengths)[pwLen]
+    if ok {
+      (*h1.lengths)[pwLen] += count
+    }
+  }
+  for pwLen, count := range *h2.lengths {
+    _, ok := (*h1.lengths)[pwLen]
+    if !ok {
+      (*h1.lengths)[pwLen] = count
+    }
+  }
+}
+
+// h1 and p1 are main
+// h2 and p2 come from the thread
+func mergeThreadResults(h1, h2 *statHelper, p1, p2 *map[string]bool) (collisions int) {
+  mergeHelpers(h1, h2)
+  collisions = 0
+  // for every password collision between the maps, need to adjust stats
+  for pw2 := range *p2 {
+    if (*p1)[pw2] {
+      d := ccds.AnalyzePW(pw2)
+      // create a negated statHelper
+      neg := &statHelper{}
+      lengths := make(map[int]int)
+      neg.lengths = &lengths
+      incrementHelper(neg, &d, -1)
+      mergeHelpers(h1, neg)
+      collisions += 1
+    } else {
+      (*p1)[pw2] = true
+    }
+  }
+  return
 }
 
 func updatePercentages(s *stat, h *statHelper) {
@@ -166,7 +280,7 @@ func updatePercentages(s *stat, h *statHelper) {
   if tot == 0 {
     return
   }
-  s.Unique = tot / float64(totPW)
+  s.Unique = tot / float64(h.totPW)
   s.Up = float64(h.up) / tot
   s.Low = float64(h.low) / tot
   s.Let = float64(h.let) / tot
@@ -184,6 +298,9 @@ func updatePercentages(s *stat, h *statHelper) {
   s.LetNumOnly = float64(h.letNumOnly) / tot
   s.LetSymOnly = float64(h.letSymOnly) / tot
   s.NumSymOnly = float64(h.numSymOnly) / tot
+  s.Fmt1 = float64(h.fmt1) / tot
+  s.Fmt2 = float64(h.fmt2) / tot
+  s.Lengths = *h.lengths
 }
 
 func updateStats(h *statHelper, d *ccds.PWData, exists bool) {
@@ -191,59 +308,7 @@ func updateStats(h *statHelper, d *ccds.PWData, exists bool) {
   if exists {
     return
   }
-  h.totUniquePW += 1
-  let := d.Upper || d.Lower
-  if d.Upper {
-    h.up += 1
-    if !d.Lower && !d.Numbers && !d.Symbols {
-      h.upOnly += 1
-    }
-  }
-  if d.Lower {
-    h.low += 1
-    if !d.Upper && !d.Numbers && !d.Symbols {
-      h.lowOnly += 1
-    }
-  }
-  if let {
-    h.let += 1
-    if !d.Numbers && !d.Symbols {
-      h.letOnly += 1
-    }
-  }
-  if d.Numbers {
-    h.num += 1
-    if !let && !d.Symbols {
-      h.numOnly += 1
-    }
-  }
-  if d.Symbols {
-    h.sym += 1
-    if !let && !d.Numbers {
-      h.symOnly += 1
-    }
-  }
-  if let && d.Numbers {
-    h.letNum += 1
-    if !d.Symbols {
-      h.letNumOnly += 1
-    }
-  }
-  if let && d.Symbols {
-    h.letSym += 1
-    if !d.Numbers {
-      h.letSymOnly += 1
-    }
-  }
-  if d.Numbers && d.Symbols {
-    h.numSym += 1
-    if !let {
-      h.numSymOnly += 1
-    }
-  }
-  if let && d.Numbers && d.Symbols {
-    h.letNumSym += 1
-  }
+  incrementHelper(h, d, 1)
 }
 
 func writeStats(s *stat, path string) (err error) {
@@ -267,6 +332,7 @@ func main() {
   flag.IntVar(&threads, "threads", 1, "Number of threads to parallelize reading of the file.")
   flag.IntVar(&cacheLimit, "cache", 100000, "Limit on size in bytes of the hashmap cache of passwords. Set to -1 to remove limit.")
   flag.Parse()
+  fmt.Println(cacheLimit)
   info, err := os.Stat(path)
   if err != nil && os.IsNotExist(err) {
     log.Fatal("File at " + path + " does not exist.")
@@ -286,10 +352,13 @@ func main() {
     limit = lines
   }
   start := time.Now()
+  pwChan := make(chan *map[string]bool)
   helperChan := make(chan *statHelper)
   errChan := make(chan error)
   step := limit / threads
-  cacheLimit = cacheLimit / threads
+  if cacheLimit > 0 {
+    cacheLimit = cacheLimit / threads
+  }
   remaining := limit - (step * threads)
   lastLine := 0
   // split up the work
@@ -299,25 +368,32 @@ func main() {
       extra = 1
     }
     numLines := step + extra
-    go analysisThread(path, numLines, lastLine + offset, cacheLimit, helperChan, errChan)
+    go analysisThread(path, numLines, lastLine + offset, cacheLimit, helperChan, pwChan, errChan)
     lastLine += numLines
   }
   s := &stat{}
   helper := &statHelper{}
+  lengths := make(map[int]int)
+  helper.lengths = &lengths
+  pwCache := make(map[string]bool)
+  collisions := 0
   // wait for chan responses
   for i := 0; i < threads; i += 1 {
     h := <- helperChan
+    p := <- pwChan
     err := <- errChan
     if err != nil {
       fmt.Println(err)
     }
-    // merge statHelpers; this needs to happen
-    // before updateStats() to avoid duplicates
+    // merge statHelpers and password caches; this needs
+    // to happen before updateStats() to avoid duplicates
     if threads == 1 {
       helper = h
+      pwCache = *p
       continue
     }
-    mergeHelpers(helper, h)
+    cols := mergeThreadResults(helper, h, &pwCache, p)
+    collisions += cols
   }
   updatePercentages(s, helper)
   err = writeStats(s, statsPath)
@@ -325,4 +401,7 @@ func main() {
     fmt.Println(err)
   }
   fmt.Println("Run time:", time.Since(start))
+  if threads > 1 {
+    fmt.Println("Password collisions between threads:", collisions)
+  }
 }

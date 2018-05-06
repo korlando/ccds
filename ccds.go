@@ -9,6 +9,9 @@ import (
   "strings"
 )
 
+const Fmt1 = "^[a-zA-Z]+[0-9]+$"
+const Fmt2 = "^[0-9]+[a-zA-Z]+$"
+
 type PWData struct{
   Count int
   Length int
@@ -16,6 +19,8 @@ type PWData struct{
   Upper bool
   Numbers bool
   Symbols bool
+  Fmt1 bool
+  Fmt2 bool
 }
 
 func AnalyzePW(pw string) (d PWData) {
@@ -25,6 +30,8 @@ func AnalyzePW(pw string) (d PWData) {
   hasUpper, _ := regexp.MatchString("[A-Z]", pw)
   hasNumbers, _ := regexp.MatchString("[0-9]", pw)
   hasSymbols, _ := regexp.MatchString("[^a-zA-Z0-9]", pw)
+  isFmt1, _ := regexp.MatchString(Fmt1, pw)
+  isFmt2, _ := regexp.MatchString(Fmt2, pw)
   if hasLower {
     d.Lower = true
   }
@@ -36,6 +43,12 @@ func AnalyzePW(pw string) (d PWData) {
   }
   if hasSymbols {
     d.Symbols = true
+  }
+  if isFmt1 {
+    d.Fmt1 = true
+  }
+  if isFmt2 {
+    d.Fmt2 = true
   }
   return
 }

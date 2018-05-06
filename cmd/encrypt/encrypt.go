@@ -170,8 +170,8 @@ func main() {
   if threads <= 0 {
     log.Fatal("Threads should be at least 1.")
   }
-  limit = 200000
-  offset = 30400000
+  limit = 700000
+  offset = 31300000
   if limit < 0 {
     fmt.Println("Calculating number of credentials...")
     lines, err := ccds.CountLines(path)
