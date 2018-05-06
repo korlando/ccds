@@ -12,11 +12,16 @@ import (
   "time"
   "unsafe"
 
+  _ "github.com/go-sql-driver/mysql"
   "ccds"
+  "ccds/server"
 )
 
-const dataPath = "../../data/data.tsv"
-const statsPath = "../../data/pw-stats.json"
+const (
+  dataPath = "../../data/data.tsv"
+  statsPath = "../../data/pw-stats.json"
+  pwDataTable = "pw_data_helper"
+)
 
 // tracks the totals, whereas stat stores percentage
 type statHelper struct{
@@ -70,10 +75,9 @@ type stat struct{
   Lengths map[int]int `json:"passwordLengths"`
 }
 
-func analysisThread(path string, limit, offset int, cacheLimit int, helperChan chan *statHelper, pwChan chan *map[string]bool, errChan chan error) {
-  h, p, err := analyzeAll(path, limit, offset, cacheLimit)
+func analysisThread(path string, limit, offset int, cacheLimit int, helperChan chan *statHelper, errChan chan error) {
+  h, err := analyzeAll(path, limit, offset, cacheLimit)
   helperChan <- &h
-  pwChan <- &p
   if err != nil {
     errChan <- err
     return
@@ -83,7 +87,16 @@ func analysisThread(path string, limit, offset int, cacheLimit int, helperChan c
 
 // set limit to -1 (or anything < 0) to read all lines
 // set cacheLimit to -1 to remove memory bound on cache
-func analyzeAll(path string, limit, offset int, cacheLimit int) (h statHelper, p map[string]bool, err error) {
+func analyzeAll(path string, limit, offset int, cacheLimit int) (h statHelper, err error) {
+  db, err := server.GetDevDB()
+  if err != nil {
+    return
+  }
+  defer db.Close()
+  err = db.Ping()
+  if err != nil {
+    return
+  }
   file, err := os.Open(path)
   if err != nil {
     return
@@ -94,10 +107,8 @@ func analyzeAll(path string, limit, offset int, cacheLimit int) (h statHelper, p
   h = statHelper{}
   lengths := make(map[int]int)
   h.lengths = &lengths
-  m := make(map[string]*ccds.PWData)
-  // track the set of passwords
-  p = make(map[string]bool)
-  mSize := int(unsafe.Sizeof(m))
+  cache := make(map[string]ccds.PWData)
+  cacheSize := int(unsafe.Sizeof(cache))
   for (limit < 0 || lines < limit + offset) && scanner.Scan() {
     lines += 1
     if lines <= offset {
@@ -108,44 +119,42 @@ func analyzeAll(path string, limit, offset int, cacheLimit int) (h statHelper, p
     if err != nil {
       continue
     }
-    d, ok := m[pw]
+    d, ok := cache[pw]
     if ok {
       d.Count += 1
+      cache[pw] = d
     } else {
-      data := ccds.AnalyzePW(pw)
-      m[pw] = &data
-      // rough estimate of key/value size in bytes
-      mSize += 8 + (8 * len(pw)) + (8 * int(unsafe.Sizeof(data)))
-    }
-    // reset cache to clear up some memory
-    if cacheLimit >= 0 && mSize >= cacheLimit {
-      for pw, d = range m {
-        exists := p[pw]
-        updateStats(&h, d, exists)
+      d = ccds.AnalyzePW(pw)
+      if cacheLimit < 0 || cacheSize < cacheLimit {
+        cache[pw] = d
+        // rough estimate of key/value size in bytes
+        cacheSize += 8 + (8 * len(pw)) + (8 * int(unsafe.Sizeof(d)))
+      } else {
+        // cache too big, use db to check uniqueness
+        var exists bool
+        err = db.QueryRow("SELECT EXISTS(SELECT * FROM " + pwDataTable + " WHERE pw = BINARY ? LIMIT 1)", pw).Scan(&exists)
         if !exists {
-          // move passwords to a different set to track uniqueness
-          p[pw] = true
+          _, err = db.Exec("INSERT INTO " + pwDataTable + " (pw) VALUES (?)", pw)
+          if err == nil {
+            updateStats(&h, d, false)
+          }
+        } else {
+          updateStats(&h, d, true)
         }
       }
-      m = make(map[string]*ccds.PWData)
-      mSize = int(unsafe.Sizeof(m))
     }
   }
   if err := scanner.Err(); err != nil {
     fmt.Printf("Invalid input: %s\n", err)
   }
-  for pw, d := range m {
-    exists := p[pw]
-    updateStats(&h, d, exists)
-    if !exists {
-      p[pw] = true
-    }
+  for _, d := range cache {
+    updateStats(&h, d, false)
   }
   return
 }
 
 // logic for incrementing stats by "a" amount
-func incrementHelper(h *statHelper, d *ccds.PWData, a int) {
+func incrementHelper(h *statHelper, d ccds.PWData, a int) {
   h.totUniquePW += a
   let := d.Upper || d.Lower
   if d.Upper {
@@ -263,7 +272,7 @@ func mergeThreadResults(h1, h2 *statHelper, p1, p2 *map[string]bool) (collisions
       neg := &statHelper{}
       lengths := make(map[int]int)
       neg.lengths = &lengths
-      incrementHelper(neg, &d, -1)
+      incrementHelper(neg, d, -1)
       mergeHelpers(h1, neg)
       collisions += 1
     } else {
@@ -303,7 +312,7 @@ func updatePercentages(s *stat, h *statHelper) {
   s.Lengths = *h.lengths
 }
 
-func updateStats(h *statHelper, d *ccds.PWData, exists bool) {
+func updateStats(h *statHelper, d ccds.PWData, exists bool) {
   h.totPW += d.Count
   if exists {
     return
@@ -332,7 +341,6 @@ func main() {
   flag.IntVar(&threads, "threads", 1, "Number of threads to parallelize reading of the file.")
   flag.IntVar(&cacheLimit, "cache", 100000, "Limit on size in bytes of the hashmap cache of passwords. Set to -1 to remove limit.")
   flag.Parse()
-  fmt.Println(cacheLimit)
   info, err := os.Stat(path)
   if err != nil && os.IsNotExist(err) {
     log.Fatal("File at " + path + " does not exist.")
@@ -350,9 +358,9 @@ func main() {
       log.Fatal(err)
     }
     limit = lines
+    fmt.Println("Analyzing", lines, "lines...")
   }
   start := time.Now()
-  pwChan := make(chan *map[string]bool)
   helperChan := make(chan *statHelper)
   errChan := make(chan error)
   step := limit / threads
@@ -368,32 +376,25 @@ func main() {
       extra = 1
     }
     numLines := step + extra
-    go analysisThread(path, numLines, lastLine + offset, cacheLimit, helperChan, pwChan, errChan)
+    go analysisThread(path, numLines, lastLine + offset, cacheLimit, helperChan, errChan)
     lastLine += numLines
   }
   s := &stat{}
   helper := &statHelper{}
   lengths := make(map[int]int)
   helper.lengths = &lengths
-  pwCache := make(map[string]bool)
-  collisions := 0
   // wait for chan responses
   for i := 0; i < threads; i += 1 {
     h := <- helperChan
-    p := <- pwChan
     err := <- errChan
     if err != nil {
       fmt.Println(err)
     }
-    // merge statHelpers and password caches; this needs
-    // to happen before updateStats() to avoid duplicates
     if threads == 1 {
       helper = h
-      pwCache = *p
       continue
     }
-    cols := mergeThreadResults(helper, h, &pwCache, p)
-    collisions += cols
+    mergeHelpers(helper, h)
   }
   updatePercentages(s, helper)
   err = writeStats(s, statsPath)
@@ -401,7 +402,4 @@ func main() {
     fmt.Println(err)
   }
   fmt.Println("Run time:", time.Since(start))
-  if threads > 1 {
-    fmt.Println("Password collisions between threads:", collisions)
-  }
 }
