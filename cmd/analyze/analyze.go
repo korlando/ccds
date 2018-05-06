@@ -25,54 +25,54 @@ const (
 
 // tracks the totals, whereas stat stores percentage
 type statHelper struct{
-  totPW int
-  totUniquePW int
-  up int
-  low int
-  let int
-  num int
-  sym int
-  letNum int
-  letSym int
-  numSym int
-  letNumSym int
-  upOnly int
-  lowOnly int
-  letOnly int
-  numOnly int
-  symOnly int
-  letNumOnly int
-  letSymOnly int
-  numSymOnly int
-  fmt1 int
-  fmt2 int
-  lengths *map[int]int // key: pw length, value: num pws
+  totPW       uint
+  totUniquePW uint
+  up          uint
+  low         uint
+  let         uint
+  num         uint
+  sym         uint
+  letNum      uint
+  letSym      uint
+  numSym      uint
+  letNumSym   uint
+  upOnly      uint
+  lowOnly     uint
+  letOnly     uint
+  numOnly     uint
+  symOnly     uint
+  letNumOnly  uint
+  letSymOnly  uint
+  numSymOnly  uint
+  fmt1        uint
+  fmt2        uint
+  lengths     *map[uint16]uint // key: pw length, value: num pws
 }
 
 type stat struct{
-  TotPW int `json:"totalPasswords"`
-  TotUniquePW int `json:"totalUniquePasswords"`
-  Unique float64 `json:"uniquePasswordsPercent"`
-  Up float64 `json:"hasUppercase"`
-  Low float64 `json:"hasLowercase"`
-  Let float64 `json:"hasLetters"`
-  Num float64 `json:"hasNumbers"`
-  Sym float64 `json:"hasSymbols"`
-  LetNum float64 `json:"hasLettersAndNumbers"`
-  LetSym float64 `json:"hasLettersAndSymbols"`
-  NumSym float64 `json:"hasNumbersAndSymbols"`
-  LetNumSym float64 `json:"hasLettersNumbersAndSymbols"`
-  UpOnly float64 `json:"hasUppercaseOnly"`
-  LowOnly float64 `json:"hasLowercaseOnly"`
-  LetOnly float64 `json:"hasLettersOnly"`
-  NumOnly float64 `json:"hasNumbersOnly"`
-  SymOnly float64 `json:"hasSymbolsOnly"`
-  LetNumOnly float64 `json:"hasLettersAndNumbersOnly"`
-  LetSymOnly float64 `json:"hasLettersAndSymbolsOnly"`
-  NumSymOnly float64 `json:"hasNumbersAndSymbolsOnly"`
-  Fmt1 float64 `json:"format^[a-zA-Z]+[0-9]+$"`
-  Fmt2 float64 `json:"format^[0-9]+[a-zA-Z]+$"`
-  Lengths map[int]int `json:"passwordLengths"`
+  TotPW       uint            `json:"totalPasswords"`
+  TotUniquePW uint            `json:"totalUniquePasswords"`
+  Unique      float64         `json:"uniquePasswordsPercent"`
+  Up          float64         `json:"hasUppercase"`
+  Low         float64         `json:"hasLowercase"`
+  Let         float64         `json:"hasLetters"`
+  Num         float64         `json:"hasNumbers"`
+  Sym         float64         `json:"hasSymbols"`
+  LetNum      float64         `json:"hasLettersAndNumbers"`
+  LetSym      float64         `json:"hasLettersAndSymbols"`
+  NumSym      float64         `json:"hasNumbersAndSymbols"`
+  LetNumSym   float64         `json:"hasLettersNumbersAndSymbols"`
+  UpOnly      float64         `json:"hasUppercaseOnly"`
+  LowOnly     float64         `json:"hasLowercaseOnly"`
+  LetOnly     float64         `json:"hasLettersOnly"`
+  NumOnly     float64         `json:"hasNumbersOnly"`
+  SymOnly     float64         `json:"hasSymbolsOnly"`
+  LetNumOnly  float64         `json:"hasLettersAndNumbersOnly"`
+  LetSymOnly  float64         `json:"hasLettersAndSymbolsOnly"`
+  NumSymOnly  float64         `json:"hasNumbersAndSymbolsOnly"`
+  Fmt1        float64         `json:"format^[a-zA-Z]+[0-9]+$"`
+  Fmt2        float64         `json:"format^[0-9]+[a-zA-Z]+$"`
+  Lengths     map[uint16]uint `json:"passwordLengths"`
 }
 
 func analysisThread(path string, limit, offset int, cacheLimit int, helperChan chan *statHelper, cacheChan chan map[string]ccds.PWData, errChan chan error) {
@@ -106,7 +106,7 @@ func analyzeAll(path string, limit, offset int, cacheLimit int) (h statHelper, c
   scanner := bufio.NewScanner(file)
   lines := 0
   h = statHelper{}
-  lengths := make(map[int]int)
+  lengths := make(map[uint16]uint)
   h.lengths = &lengths
   cache = make(map[string]ccds.PWData)
   cacheSize := int(unsafe.Sizeof(cache))
@@ -152,7 +152,7 @@ func analyzeAll(path string, limit, offset int, cacheLimit int) (h statHelper, c
 }
 
 // logic for incrementing stats by "a" amount
-func incrementHelper(h *statHelper, d ccds.PWData, a int) {
+func incrementHelper(h *statHelper, d ccds.PWData, a uint) {
   h.totUniquePW += a
   let := d.Upper || d.Lower
   if d.Upper {
@@ -373,9 +373,10 @@ func main() {
   }
   s := &stat{}
   helper := &statHelper{}
-  lengths := make(map[int]int)
+  lengths := make(map[uint16]uint)
   helper.lengths = &lengths
   cache := make(map[string]ccds.PWData)
+  collisions := 0
   // wait for chan responses
   for i := 0; i < threads; i += 1 {
     h := <- helperChan
@@ -389,7 +390,7 @@ func main() {
       cache = c
       continue
     }
-    mergeThreadResults(helper, h, &cache, &c)
+    collisions += mergeThreadResults(helper, h, &cache, &c)
   }
   for _, d := range cache {
     updateStats(helper, d, false)
@@ -400,4 +401,7 @@ func main() {
     fmt.Println(err)
   }
   fmt.Println("Run time:", time.Since(start))
+  if threads > 1 {
+    fmt.Println("Password collisions between threads:", collisions)
+  }
 }
