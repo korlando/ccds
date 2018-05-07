@@ -9,6 +9,7 @@ import (
   "log"
   "os"
   "runtime"
+  "strconv"
   "strings"
   "time"
 
@@ -77,8 +78,17 @@ type stat struct{
   Lengths     map[uint16]int  `json:"passwordLengths"`
 }
 
-func analysisThread(path string, limit, offset int, dbMode *bool, helperChan chan *statHelper, cacheChan chan *map[string]struct{}, errChan chan error) {
-  h, cache, err := analyzeAll(path, limit, offset, dbMode)
+type options struct{
+  path    string
+  limit   int
+  offset  int
+  threads int
+  cache   int
+  unique  bool
+}
+
+func analysisThread(path string, limit, offset int, unique bool, dbMode *bool, helperChan chan *statHelper, cacheChan chan *map[string]struct{}, errChan chan error) {
+  h, cache, err := analyzeAll(path, limit, offset, unique, dbMode)
   helperChan <- &h
   cacheChan <- &cache
   if err != nil {
@@ -89,7 +99,7 @@ func analysisThread(path string, limit, offset int, dbMode *bool, helperChan cha
 }
 
 // set limit to -1 (or anything < 0) to read all lines
-func analyzeAll(path string, limit, offset int, dbMode *bool) (h statHelper, cache map[string]struct{}, err error) {
+func analyzeAll(path string, limit, offset int, unique bool, dbMode *bool) (h statHelper, cache map[string]struct{}, err error) {
   db, err := server.GetDevDB()
   if err != nil {
     return
@@ -109,7 +119,9 @@ func analyzeAll(path string, limit, offset int, dbMode *bool) (h statHelper, cac
   h = statHelper{}
   lengths := make(map[uint16]int)
   h.lengths = &lengths
-  cache = make(map[string]struct{})
+  if unique {
+    cache = make(map[string]struct{})
+  }
   for (limit < 0 || lines < limit + offset) && scanner.Scan() {
     lines += 1
     if lines <= offset {
@@ -121,6 +133,11 @@ func analyzeAll(path string, limit, offset int, dbMode *bool) (h statHelper, cac
       continue
     }
     h.totPW += 1
+    if !unique {
+      d := ccds.AnalyzePW(pw)
+      updateStats(&h, &d)
+      continue
+    }
     _, cacheHit := cache[pw]
     if cacheHit {
       continue
@@ -128,14 +145,14 @@ func analyzeAll(path string, limit, offset int, dbMode *bool) (h statHelper, cac
     if !*dbMode {
       cache[pw] = empty
       d := ccds.AnalyzePW(pw)
-      updateStats(&h, &d, false)
+      updateStats(&h, &d)
       continue
     }
     // cache too big, use db to check uniqueness
     _, err = db.Exec("INSERT INTO " + pwDataTable + " (pw) VALUES (?)", pw)
     if err == nil {
       d := ccds.AnalyzePW(pw)
-      updateStats(&h, &d, false)
+      updateStats(&h, &d)
     }
   }
   if err := scanner.Err(); err != nil {
@@ -277,6 +294,67 @@ func mergeThreadResults(h1, h2 *statHelper, cacheList *[]*map[string]struct{}, c
   return
 }
 
+func parseFlags() (opt options) {
+  var p, path string
+  var l, limit int
+  var o, offset int
+  var t, threads int
+  var c, cache int
+  var u, unique bool
+  pDefault := dataPath
+  lDefault := 0
+  oDefault := 0
+  tDefault := 1
+  cDefault := 100000
+  uDefault := false
+  pDesc := "Path to the data file."
+  lDesc := "Limit on the number of credentials to read."
+  oDesc := "Offset the line to start reading from (0-indexed)."
+  tDesc := "Number of threads to parallelize reading of the file."
+  cDesc := "Limit on size in bytes of the hashmap cache of passwords; defaults to " + strconv.FormatInt(int64(cDefault), 10) + ". Set to -1 to remove limit."
+  uDesc := "Only count unique passwords in the analysis."
+  flag.StringVar(&p, "p", pDefault, pDesc)
+  flag.IntVar(&l, "l", lDefault, lDesc)
+  flag.IntVar(&o, "o", oDefault, oDesc)
+  flag.IntVar(&t, "t", tDefault, tDesc)
+  flag.IntVar(&c, "c", cDefault, cDesc)
+  flag.BoolVar(&u, "u", uDefault, uDesc)
+  flag.StringVar(&path, "path", pDefault, pDesc)
+  flag.IntVar(&limit, "limit", lDefault, lDesc)
+  flag.IntVar(&offset, "offset", oDefault, oDesc)
+  flag.IntVar(&threads, "threads", tDefault, tDesc)
+  flag.IntVar(&cache, "cache", cDefault, cDesc)
+  flag.BoolVar(&unique, "unique", uDefault, uDesc)
+  flag.Parse()
+  opt = options{
+    path: p,
+    limit: l,
+    offset: o,
+    threads: t,
+    cache: c,
+    unique: u,
+  }
+  if path != pDefault {
+    opt.path = path
+  }
+  if limit != lDefault {
+    opt.limit = limit
+  }
+  if offset != oDefault {
+    opt.offset = offset
+  }
+  if threads != tDefault {
+    opt.threads = threads
+  }
+  if cache != cDefault {
+    opt.cache = cache
+  }
+  if unique != uDefault {
+    opt.unique = unique
+  }
+  return
+}
+
 func updateDbMode(dbMode *bool, cacheLimit int, pollRate time.Duration) {
   for !*dbMode {
     var m runtime.MemStats
@@ -321,10 +399,7 @@ func updatePercentages(s *stat, h *statHelper) {
   s.Lengths = *h.lengths
 }
 
-func updateStats(h *statHelper, d *ccds.PWData, exists bool) {
-  if exists {
-    return
-  }
+func updateStats(h *statHelper, d *ccds.PWData) {
   incrementHelper(h, d, 1)
 }
 
@@ -338,17 +413,13 @@ func writeStats(s *stat, path string) (err error) {
 }
 
 func main() {
-  var path string
-  var limit int
-  var offset int
-  var threads int
-  var cacheLimit int
-  flag.StringVar(&path, "path", dataPath, "Path to the data file.")
-  flag.IntVar(&limit, "limit", 0, "Limit on the number of credentials to read.")
-  flag.IntVar(&offset, "offset", 0, "Offset the line to start reading from (0-indexed).")
-  flag.IntVar(&threads, "threads", 1, "Number of threads to parallelize reading of the file.")
-  flag.IntVar(&cacheLimit, "cache", 100000, "Limit on size in bytes of the hashmap cache of passwords. Set to -1 to remove limit.")
-  flag.Parse()
+  o := parseFlags()
+  path := o.path
+  limit := o.limit
+  offset := o.offset
+  threads := o.threads
+  cacheLimit := o.cache
+  unique := o.unique
   info, err := os.Stat(path)
   if err != nil && os.IsNotExist(err) {
     log.Fatal("File at " + path + " does not exist.")
@@ -383,7 +454,7 @@ func main() {
       extra = 1
     }
     numLines := step + extra
-    go analysisThread(path, numLines, lastLine + offset, &dbMode, helperChan, cacheChan, errChan)
+    go analysisThread(path, numLines, lastLine + offset, unique, &dbMode, helperChan, cacheChan, errChan)
     lastLine += numLines
   }
   if !dbMode && cacheLimit >= 0 {
@@ -407,8 +478,12 @@ func main() {
       helper = h
       continue
     }
-    collisions += mergeThreadResults(helper, h, &cacheList, c)
-    cacheList[i] = c
+    if unique {
+      collisions += mergeThreadResults(helper, h, &cacheList, c)
+      cacheList[i] = c
+    } else {
+      mergeHelpers(helper, h)
+    }
   }
   updatePercentages(s, helper)
   err = writeStats(s, statsPath)
@@ -416,7 +491,7 @@ func main() {
     fmt.Println(err)
   }
   fmt.Println("Run time:", time.Since(start))
-  if threads > 1 {
+  if threads > 1 && unique {
     fmt.Println("Password collisions between threads:", collisions)
   }
   var m runtime.MemStats
