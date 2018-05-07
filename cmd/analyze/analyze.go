@@ -8,9 +8,9 @@ import (
   "io/ioutil"
   "log"
   "os"
+  "runtime"
   "strings"
   "time"
-  "unsafe"
 
   _ "github.com/go-sql-driver/mysql"
   "ccds"
@@ -75,10 +75,10 @@ type stat struct{
   Lengths     map[uint16]uint `json:"passwordLengths"`
 }
 
-func analysisThread(path string, limit, offset int, cacheLimit int, helperChan chan *statHelper, cacheChan chan map[string]ccds.PWData, errChan chan error) {
-  h, cache, err := analyzeAll(path, limit, offset, cacheLimit)
+func analysisThread(path string, limit, offset int, cacheLimit int, dbMode *bool, helperChan chan *statHelper, cacheChan chan *map[string]*ccds.PWData, errChan chan error) {
+  h, cache, err := analyzeAll(path, limit, offset, cacheLimit, dbMode)
   helperChan <- &h
-  cacheChan <- cache
+  cacheChan <- &cache
   if err != nil {
     errChan <- err
     return
@@ -88,7 +88,7 @@ func analysisThread(path string, limit, offset int, cacheLimit int, helperChan c
 
 // set limit to -1 (or anything < 0) to read all lines
 // set cacheLimit to -1 to remove memory bound on cache
-func analyzeAll(path string, limit, offset int, cacheLimit int) (h statHelper, cache map[string]ccds.PWData, err error) {
+func analyzeAll(path string, limit, offset int, cacheLimit int, dbMode *bool) (h statHelper, cache map[string]*ccds.PWData, err error) {
   db, err := server.GetDevDB()
   if err != nil {
     return
@@ -108,8 +108,7 @@ func analyzeAll(path string, limit, offset int, cacheLimit int) (h statHelper, c
   h = statHelper{}
   lengths := make(map[uint16]uint)
   h.lengths = &lengths
-  cache = make(map[string]ccds.PWData)
-  cacheSize := int(unsafe.Sizeof(cache))
+  cache = make(map[string]*ccds.PWData)
   for (limit < 0 || lines < limit + offset) && scanner.Scan() {
     lines += 1
     if lines <= offset {
@@ -120,16 +119,14 @@ func analyzeAll(path string, limit, offset int, cacheLimit int) (h statHelper, c
     if err != nil {
       continue
     }
-    d, ok := cache[pw]
+    h.totPW += 1
+    data, ok := cache[pw]
     if ok {
-      d.Count += 1
-      cache[pw] = d
+      data.Count += 1
     } else {
-      d = ccds.AnalyzePW(pw)
-      if cacheLimit < 0 || cacheSize < cacheLimit {
-        cache[pw] = d
-        // rough estimate of key/value size in bytes
-        cacheSize += 8 + (8 * len(pw)) + (8 * int(unsafe.Sizeof(d)))
+      d := ccds.AnalyzePW(pw)
+      if !*dbMode {
+        cache[pw] = &d
       } else {
         // cache too big, use db to check uniqueness
         var exists bool
@@ -137,10 +134,10 @@ func analyzeAll(path string, limit, offset int, cacheLimit int) (h statHelper, c
         if !exists {
           _, err = db.Exec("INSERT INTO " + pwDataTable + " (pw) VALUES (?)", pw)
           if err == nil {
-            updateStats(&h, d, false)
+            updateStats(&h, &d, false)
           }
         } else {
-          updateStats(&h, d, true)
+          updateStats(&h, &d, true)
         }
       }
     }
@@ -152,7 +149,7 @@ func analyzeAll(path string, limit, offset int, cacheLimit int) (h statHelper, c
 }
 
 // logic for incrementing stats by "a" amount
-func incrementHelper(h *statHelper, d ccds.PWData, a uint) {
+func incrementHelper(h *statHelper, d *ccds.PWData, a uint) {
   h.totUniquePW += a
   let := d.Upper || d.Lower
   if d.Upper {
@@ -257,20 +254,43 @@ func mergeHelpers(h1, h2 *statHelper) {
   }
 }
 
-// h1 and c1 are main
-// h2 and c2 come from the thread
-func mergeThreadResults(h1, h2 *statHelper, c1, c2 *map[string]ccds.PWData) (collisions int) {
+// h1 and cacheList are main
+// h2 and c come from the thread
+func mergeThreadResults(h1, h2 *statHelper, cacheList *[]*map[string]*ccds.PWData, c *map[string]*ccds.PWData) (collisions int) {
   mergeHelpers(h1, h2)
   collisions = 0
-  for pw, d2 := range *c2 {
-    d1, ok := (*c1)[pw]
-    if ok {
-      d2.Count += d1.Count
+  for pw, d := range *c {
+    var exists bool
+    for _, cPtr := range *cacheList {
+      if cPtr == nil {
+        continue
+      }
+      _, hit := (*cPtr)[pw]
+      if hit {
+        exists = true
+        break
+      }
+    }
+    updateStats(h1, d, exists)
+    if exists {
       collisions += 1
     }
-    (*c1)[pw] = d2
   }
   return
+}
+
+func updateDbMode(dbMode *bool, cacheLimit int, pollRate time.Duration) {
+  for !*dbMode {
+    var m runtime.MemStats
+    runtime.ReadMemStats(&m)
+    fmt.Println("Memory imprint:", m.Alloc / 1000000, "MB")
+    if m.Alloc >= uint64(cacheLimit) {
+      *dbMode = true
+      fmt.Println("Switching to DB mode...")
+    } else {
+      time.Sleep(pollRate)
+    }
+  }
 }
 
 func updatePercentages(s *stat, h *statHelper) {
@@ -303,8 +323,7 @@ func updatePercentages(s *stat, h *statHelper) {
   s.Lengths = *h.lengths
 }
 
-func updateStats(h *statHelper, d ccds.PWData, exists bool) {
-  h.totPW += d.Count
+func updateStats(h *statHelper, d *ccds.PWData, exists bool) {
   if exists {
     return
   }
@@ -352,13 +371,11 @@ func main() {
     fmt.Println("Analyzing", lines, "lines...")
   }
   start := time.Now()
+  dbMode := cacheLimit == 0
   helperChan := make(chan *statHelper)
-  cacheChan := make(chan map[string]ccds.PWData)
+  cacheChan := make(chan *map[string]*ccds.PWData)
   errChan := make(chan error)
   step := limit / threads
-  if cacheLimit > 0 {
-    cacheLimit = cacheLimit / threads
-  }
   remaining := limit - (step * threads)
   lastLine := 0
   // split up the work
@@ -368,14 +385,17 @@ func main() {
       extra = 1
     }
     numLines := step + extra
-    go analysisThread(path, numLines, lastLine + offset, cacheLimit, helperChan, cacheChan, errChan)
+    go analysisThread(path, numLines, lastLine + offset, cacheLimit, &dbMode, helperChan, cacheChan, errChan)
     lastLine += numLines
+  }
+  if !dbMode && cacheLimit >= 0 {
+    go updateDbMode(&dbMode, cacheLimit, 5 * time.Second)
   }
   s := &stat{}
   helper := &statHelper{}
   lengths := make(map[uint16]uint)
   helper.lengths = &lengths
-  cache := make(map[string]ccds.PWData)
+  cacheList := make([]*map[string]*ccds.PWData, threads)
   collisions := 0
   // wait for chan responses
   for i := 0; i < threads; i += 1 {
@@ -387,13 +407,13 @@ func main() {
     }
     if threads == 1 {
       helper = h
-      cache = c
+      for _, d := range *c {
+        updateStats(helper, d, false)
+      }
       continue
     }
-    collisions += mergeThreadResults(helper, h, &cache, &c)
-  }
-  for _, d := range cache {
-    updateStats(helper, d, false)
+    collisions += mergeThreadResults(helper, h, &cacheList, c)
+    cacheList[i] = c
   }
   updatePercentages(s, helper)
   err = writeStats(s, statsPath)
@@ -404,4 +424,7 @@ func main() {
   if threads > 1 {
     fmt.Println("Password collisions between threads:", collisions)
   }
+  var m runtime.MemStats
+  runtime.ReadMemStats(&m)
+  fmt.Println("Total memory usage:", m.TotalAlloc, "bytes")
 }
