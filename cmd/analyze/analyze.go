@@ -23,35 +23,37 @@ const (
   pwDataTable = "pw_data_helper"
 )
 
+var empty struct{}
+
 // tracks the totals, whereas stat stores percentage
 type statHelper struct{
   totPW       uint
-  totUniquePW uint
-  up          uint
-  low         uint
-  let         uint
-  num         uint
-  sym         uint
-  letNum      uint
-  letSym      uint
-  numSym      uint
-  letNumSym   uint
-  upOnly      uint
-  lowOnly     uint
-  letOnly     uint
-  numOnly     uint
-  symOnly     uint
-  letNumOnly  uint
-  letSymOnly  uint
-  numSymOnly  uint
-  fmt1        uint
-  fmt2        uint
-  lengths     *map[uint16]uint // key: pw length, value: num pws
+  totUniquePW int
+  up          int
+  low         int
+  let         int
+  num         int
+  sym         int
+  letNum      int
+  letSym      int
+  numSym      int
+  letNumSym   int
+  upOnly      int
+  lowOnly     int
+  letOnly     int
+  numOnly     int
+  symOnly     int
+  letNumOnly  int
+  letSymOnly  int
+  numSymOnly  int
+  fmt1        int
+  fmt2        int
+  lengths     *map[uint16]int // key: pw length, value: num pws
 }
 
 type stat struct{
   TotPW       uint            `json:"totalPasswords"`
-  TotUniquePW uint            `json:"totalUniquePasswords"`
+  TotUniquePW int             `json:"totalUniquePasswords"`
   Unique      float64         `json:"uniquePasswordsPercent"`
   Up          float64         `json:"hasUppercase"`
   Low         float64         `json:"hasLowercase"`
@@ -72,11 +74,11 @@ type stat struct{
   NumSymOnly  float64         `json:"hasNumbersAndSymbolsOnly"`
   Fmt1        float64         `json:"format^[a-zA-Z]+[0-9]+$"`
   Fmt2        float64         `json:"format^[0-9]+[a-zA-Z]+$"`
-  Lengths     map[uint16]uint `json:"passwordLengths"`
+  Lengths     map[uint16]int  `json:"passwordLengths"`
 }
 
-func analysisThread(path string, limit, offset int, cacheLimit int, dbMode *bool, helperChan chan *statHelper, cacheChan chan *map[string]*ccds.PWData, errChan chan error) {
-  h, cache, err := analyzeAll(path, limit, offset, cacheLimit, dbMode)
+func analysisThread(path string, limit, offset int, dbMode *bool, helperChan chan *statHelper, cacheChan chan *map[string]struct{}, errChan chan error) {
+  h, cache, err := analyzeAll(path, limit, offset, dbMode)
   helperChan <- &h
   cacheChan <- &cache
   if err != nil {
@@ -87,8 +89,7 @@ func analysisThread(path string, limit, offset int, cacheLimit int, dbMode *bool
 }
 
 // set limit to -1 (or anything < 0) to read all lines
-// set cacheLimit to -1 to remove memory bound on cache
-func analyzeAll(path string, limit, offset int, cacheLimit int, dbMode *bool) (h statHelper, cache map[string]*ccds.PWData, err error) {
+func analyzeAll(path string, limit, offset int, dbMode *bool) (h statHelper, cache map[string]struct{}, err error) {
   db, err := server.GetDevDB()
   if err != nil {
     return
@@ -106,9 +107,9 @@ func analyzeAll(path string, limit, offset int, cacheLimit int, dbMode *bool) (h
   scanner := bufio.NewScanner(file)
   lines := 0
   h = statHelper{}
-  lengths := make(map[uint16]uint)
+  lengths := make(map[uint16]int)
   h.lengths = &lengths
-  cache = make(map[string]*ccds.PWData)
+  cache = make(map[string]struct{})
   for (limit < 0 || lines < limit + offset) && scanner.Scan() {
     lines += 1
     if lines <= offset {
@@ -120,26 +121,21 @@ func analyzeAll(path string, limit, offset int, cacheLimit int, dbMode *bool) (h
       continue
     }
     h.totPW += 1
-    data, ok := cache[pw]
-    if ok {
-      data.Count += 1
-    } else {
+    _, cacheHit := cache[pw]
+    if cacheHit {
+      continue
+    }
+    if !*dbMode {
+      cache[pw] = empty
       d := ccds.AnalyzePW(pw)
-      if !*dbMode {
-        cache[pw] = &d
-      } else {
-        // cache too big, use db to check uniqueness
-        var exists bool
-        err = db.QueryRow("SELECT EXISTS(SELECT * FROM " + pwDataTable + " WHERE pw = BINARY ? LIMIT 1)", pw).Scan(&exists)
-        if !exists {
-          _, err = db.Exec("INSERT INTO " + pwDataTable + " (pw) VALUES (?)", pw)
-          if err == nil {
-            updateStats(&h, &d, false)
-          }
-        } else {
-          updateStats(&h, &d, true)
-        }
-      }
+      updateStats(&h, &d, false)
+      continue
+    }
+    // cache too big, use db to check uniqueness
+    _, err = db.Exec("INSERT INTO " + pwDataTable + " (pw) VALUES (?)", pw)
+    if err == nil {
+      d := ccds.AnalyzePW(pw)
+      updateStats(&h, &d, false)
     }
   }
   if err := scanner.Err(); err != nil {
@@ -149,7 +145,7 @@ func analyzeAll(path string, limit, offset int, cacheLimit int, dbMode *bool) (h
 }
 
 // logic for incrementing stats by "a" amount
-func incrementHelper(h *statHelper, d *ccds.PWData, a uint) {
+func incrementHelper(h *statHelper, d *ccds.PWData, a int) {
   h.totUniquePW += a
   let := d.Upper || d.Lower
   if d.Upper {
@@ -256,10 +252,10 @@ func mergeHelpers(h1, h2 *statHelper) {
 
 // h1 and cacheList are main
 // h2 and c come from the thread
-func mergeThreadResults(h1, h2 *statHelper, cacheList *[]*map[string]*ccds.PWData, c *map[string]*ccds.PWData) (collisions int) {
+func mergeThreadResults(h1, h2 *statHelper, cacheList *[]*map[string]struct{}, c *map[string]struct{}) (collisions int) {
   mergeHelpers(h1, h2)
   collisions = 0
-  for pw, d := range *c {
+  for pw := range *c {
     var exists bool
     for _, cPtr := range *cacheList {
       if cPtr == nil {
@@ -271,9 +267,11 @@ func mergeThreadResults(h1, h2 *statHelper, cacheList *[]*map[string]*ccds.PWDat
         break
       }
     }
-    updateStats(h1, d, exists)
     if exists {
       collisions += 1
+      d := ccds.AnalyzePW(pw)
+      // adjust for the collision by decrementing
+      incrementHelper(h1, &d, -1)
     }
   }
   return
@@ -283,7 +281,7 @@ func updateDbMode(dbMode *bool, cacheLimit int, pollRate time.Duration) {
   for !*dbMode {
     var m runtime.MemStats
     runtime.ReadMemStats(&m)
-    fmt.Println("Memory imprint:", m.Alloc / 1000000, "MB")
+    fmt.Println("Memory alloc:", m.Alloc / 1000000, "MB")
     if m.Alloc >= uint64(cacheLimit) {
       *dbMode = true
       fmt.Println("Switching to DB mode...")
@@ -373,7 +371,7 @@ func main() {
   start := time.Now()
   dbMode := cacheLimit == 0
   helperChan := make(chan *statHelper)
-  cacheChan := make(chan *map[string]*ccds.PWData)
+  cacheChan := make(chan *map[string]struct{})
   errChan := make(chan error)
   step := limit / threads
   remaining := limit - (step * threads)
@@ -385,7 +383,7 @@ func main() {
       extra = 1
     }
     numLines := step + extra
-    go analysisThread(path, numLines, lastLine + offset, cacheLimit, &dbMode, helperChan, cacheChan, errChan)
+    go analysisThread(path, numLines, lastLine + offset, &dbMode, helperChan, cacheChan, errChan)
     lastLine += numLines
   }
   if !dbMode && cacheLimit >= 0 {
@@ -393,9 +391,9 @@ func main() {
   }
   s := &stat{}
   helper := &statHelper{}
-  lengths := make(map[uint16]uint)
+  lengths := make(map[uint16]int)
   helper.lengths = &lengths
-  cacheList := make([]*map[string]*ccds.PWData, threads)
+  cacheList := make([]*map[string]struct{}, threads)
   collisions := 0
   // wait for chan responses
   for i := 0; i < threads; i += 1 {
@@ -407,9 +405,6 @@ func main() {
     }
     if threads == 1 {
       helper = h
-      for _, d := range *c {
-        updateStats(helper, d, false)
-      }
       continue
     }
     collisions += mergeThreadResults(helper, h, &cacheList, c)
@@ -426,5 +421,5 @@ func main() {
   }
   var m runtime.MemStats
   runtime.ReadMemStats(&m)
-  fmt.Println("Total memory usage:", m.TotalAlloc, "bytes")
+  fmt.Println("Total memory usage:", m.TotalAlloc / 1000000, "MB")
 }
