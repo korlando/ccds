@@ -14,8 +14,8 @@ import (
 
   "golang.org/x/crypto/argon2"
   _ "github.com/go-sql-driver/mysql"
-  "ccds"
-  "ccds/server"
+  "github.com/korlando/ccds"
+  "github.com/korlando/ccds/server"
 )
 
 const ParseFailed = "Parse"

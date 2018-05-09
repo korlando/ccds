@@ -8,7 +8,7 @@ import (
   "strconv"
 
   _ "github.com/go-sql-driver/mysql"
-  "ccds/server"
+  "github.com/korlando/ccds/server"
 )
 
 func main() {

@@ -14,8 +14,8 @@ import (
   "time"
 
   _ "github.com/go-sql-driver/mysql"
-  "ccds"
-  "ccds/server"
+  "github.com/korlando/ccds"
+  "github.com/korlando/ccds/server"
 )
 
 const (

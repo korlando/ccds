@@ -6,7 +6,8 @@ import (
   "log"
   "os"
   "testing"
-  "ccds/server"
+
+  "github.com/korlando/ccds/server"
 )
 
 const credhashTableCreationQuery = `
