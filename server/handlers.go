@@ -1,41 +1,44 @@
 package server
 
 import (
-  "bytes"
   "database/sql"
   "encoding/json"
   "io"
   "net/http"
 )
 
-type SearchCredHashRequestBody struct {
-  Hash string `json:"hash"`
+type credReqBody struct{
+  hash     string
+  encoding string
 }
 
-type SearchCredHashResponse struct {
+type credRes struct{
   Compromised bool `json:"compromised"`
 }
 
-type SearchCredHashErr struct {
+type credErr struct{
   Err string `json:"err"`
 }
 
-func SearchCredHashHandler(w http.ResponseWriter, r *http.Request, db *sql.DB) {
-  l := r.ContentLength
-  if l == -1 {
-    l = 64
-  }
-  b := bytes.NewBuffer(make([]byte, 0, l))
-  _, err := b.ReadFrom(r.Body)
+func CredHandler(w http.ResponseWriter, r *http.Request, db *sql.DB) {
+  var req credReqBody
+  err := decodeBody(r.Body, &req)
   if err != nil {
-    respondWithJSON(w, http.StatusBadRequest, SearchCredHashErr{"An error occurred while reading the hash bytes"})
+    respondWithJSON(w, http.StatusBadRequest, credErr{"An error occurred parsing the request body"})
     return
   }
-  compromised, err := SearchCredHash(db, b.Bytes())
+  var hash []byte
+  switch req.encoding {
+  case "utf8":
+    hash = []byte(req.hash)
+  default:
+    hash = []byte(req.hash)
+  }
+  compromised, err := SearchCredHash(db, hash)
   if err != nil {
-    respondWithJSON(w, http.StatusBadRequest, SearchCredHashErr{err.Error()})
+    respondWithJSON(w, http.StatusBadRequest, credErr{err.Error()})
   } else {
-    respondWithJSON(w, http.StatusOK, SearchCredHashResponse{compromised})
+    respondWithJSON(w, http.StatusOK, credRes{compromised})
   }
 }
 

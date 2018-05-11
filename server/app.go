@@ -52,9 +52,9 @@ func (a *App) Run(addr string) {
 }
 
 func (a *App) initializeRoutes() {
-	a.RouterV1.HandleFunc("/credhash", a.searchCredHashHandler).Methods("POST")
+	a.RouterV1.HandleFunc("/cred", a.credHandler).Methods("POST")
 }
 
-func (a *App) searchCredHashHandler(w http.ResponseWriter, r *http.Request) {
-	SearchCredHashHandler(w, r, a.DB)
+func (a *App) credHandler(w http.ResponseWriter, r *http.Request) {
+	CredHandler(w, r, a.DB)
 }
