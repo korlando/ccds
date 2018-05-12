@@ -2,15 +2,24 @@ package ccds
 
 import (
   "bytes"
+  "encoding/json"
   "errors"
   "io"
+  "net/http"
   "os"
   "regexp"
+  "time"
   "strings"
+
+  "github.com/korlando/ccds/server"
 )
 
 const Fmt1 = "^[a-zA-Z]+[0-9]+$"
 const Fmt2 = "^[0-9]+[a-zA-Z]+$"
+
+var net = &http.Client{
+  Timeout: time.Second * 7,
+}
 
 type PWData struct{
   Count   uint
@@ -51,6 +60,30 @@ func AnalyzePW(pw string) (d PWData) {
     d.Fmt2 = true
   }
   return
+}
+
+func Compromised(u, pw string) (compromised bool, err error) {
+  hash, _ := DefaultArgon2([]byte(pw), []byte(strings.ToLower(u)))
+  reqBody := server.CredReqBody{string(hash),"utf8"}
+  b, err := json.Marshal(reqBody)
+  if err != nil {
+    return
+  }
+  req, err := http.NewRequest("POST", "https://airk.ai/v1/cred", bytes.NewBuffer(b))
+  if err != nil {
+    return
+  }
+  req.Header.Set("Content-Type", "application/json")
+  res, err := net.Do(req)
+  if err != nil {
+    return
+  }
+  var credRes server.CredRes
+  err = server.DecodeBody(res.Body, &credRes)
+  if err != nil {
+    return
+  }
+  return credRes.Compromised, nil
 }
 
 // counts the number of lines in the file at path

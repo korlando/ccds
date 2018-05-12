@@ -7,12 +7,12 @@ import (
   "net/http"
 )
 
-type credReqBody struct{
-  hash     string
-  encoding string
+type CredReqBody struct{
+  Hash     string `json:"hash"`
+  Encoding string `json:"encoding"`
 }
 
-type credRes struct{
+type CredRes struct{
   Compromised bool `json:"compromised"`
 }
 
@@ -21,28 +21,28 @@ type credErr struct{
 }
 
 func CredHandler(w http.ResponseWriter, r *http.Request, db *sql.DB) {
-  var req credReqBody
-  err := decodeBody(r.Body, &req)
+  var req CredReqBody
+  err := DecodeBody(r.Body, &req)
   if err != nil {
     respondWithJSON(w, http.StatusBadRequest, credErr{"An error occurred parsing the request body"})
     return
   }
   var hash []byte
-  switch req.encoding {
+  switch req.Encoding {
   case "utf8":
-    hash = []byte(req.hash)
+    hash = []byte(req.Hash)
   default:
-    hash = []byte(req.hash)
+    hash = []byte(req.Hash)
   }
   compromised, err := SearchCredHash(db, hash)
   if err != nil {
     respondWithJSON(w, http.StatusBadRequest, credErr{err.Error()})
   } else {
-    respondWithJSON(w, http.StatusOK, credRes{compromised})
+    respondWithJSON(w, http.StatusOK, CredRes{compromised})
   }
 }
 
-func decodeBody(body io.ReadCloser, v interface{}) error {
+func DecodeBody(body io.ReadCloser, v interface{}) error {
   decoder := json.NewDecoder(body)
   return decoder.Decode(v)
 }

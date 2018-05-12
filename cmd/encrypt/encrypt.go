@@ -54,7 +54,7 @@ func encryptAndInsertAll(db *sql.DB, path string, limit, offset int) (encryptTim
       failures = append(failures, failure{line, ParseFailed, err})
       continue
     }
-    credHash, execTime := runArgon2id([]byte(password), []byte(strings.ToLower(username)), 1, 64*1024, 8, 64)
+    credHash, execTime := ccds.DefaultArgon2([]byte(password), []byte(strings.ToLower(username)))
     encryptTime += execTime.Nanoseconds()
     encryptNum += 1
     _, err = db.Exec("INSERT INTO " + server.CredHashTable + " (hash) VALUES (?)", credHash)
@@ -107,14 +107,6 @@ func printAvgDur(total int64, num int, desc string) {
     avgSpeed = strconv.FormatFloat((float64(num) * 1000000000) / float64(total), 'f', 5, 64)
   }
   fmt.Println(desc, avgDur, "(" + avgSpeed + " hashes/sec)")
-}
-
-func runArgon2id(password, salt []byte, iterations, memory uint32, threads uint8, keyLen uint32) (key []byte, execTime time.Duration) {
-  start := time.Now()
-  // https://github.com/golang/crypto/blob/master/argon2/argon2.go
-  key = argon2.IDKey(password, salt, iterations, memory, threads, keyLen)
-  execTime = time.Since(start)
-  return
 }
 
 func writeFailures(failures []failure, path string) {
