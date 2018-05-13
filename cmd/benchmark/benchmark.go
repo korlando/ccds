@@ -19,7 +19,7 @@ type credential struct {
   password string
 }
 
-func encryptionThread(steps int, doneChan chan bool) {
+func encryptionThread(steps int, silent bool, doneChan chan bool) {
   start := time.Now()
   totalEncryptionTime := int64(0)
   // generate some credentials
@@ -31,8 +31,10 @@ func encryptionThread(steps int, doneChan chan bool) {
     execTime := timeArgon2id([]byte(cred.password), []byte(strings.ToLower(cred.username)), 1, 64*1024, 8, 64)
     totalEncryptionTime += execTime.Nanoseconds()
   }
-  fmt.Println(steps, "credentials encrypted in", time.Since(start))
-  printAvgDur(totalEncryptionTime, steps)
+  if !silent {
+    fmt.Println(steps, "credentials encrypted in", time.Since(start))
+    printAvgDur(totalEncryptionTime, steps)
+  }
   doneChan <- true
 }
 
@@ -73,8 +75,10 @@ func timeArgon2id(password, salt []byte, iterations, memory uint32, threads uint
 func main() {
   var number int
   var threads int
+  var silent bool
   flag.IntVar(&number, "n", 1000, "Number of credentials to generate and encrypt.")
   flag.IntVar(&threads, "t", 1, "Number of threads to parallelize reading and encryption of the file (not parallelism to use in argon2id).")
+  flag.BoolVar(&silent, "s", false, "Suppress threads from printing stats individually.")
   flag.Parse()
   if threads <= 0 {
     log.Fatal("Threads should be at least 1.")
@@ -95,7 +99,7 @@ func main() {
       extra = 1
     }
     numSteps := step + extra
-    go encryptionThread(numSteps, doneChan)
+    go encryptionThread(numSteps, silent, doneChan)
   }
   // wait for chan responses
   for i := 0; i < threads; i += 1 {
